@@ -1,0 +1,7 @@
+anthropic
+psycopg2-binary
+PyPDF2
+gTTS
+playsound
+Pillow
+win11toast

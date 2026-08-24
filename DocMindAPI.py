@@ -237,7 +237,7 @@ def escolher_api(pergunta):
 
 
 # ═══════════════════════════════════════════════════════════════
-# 6. EXECUÇÃO PRINCIPAL
+# 6. EXECUÇÃO PRINCIPAL (uso via terminal / CLI)
 # ═══════════════════════════════════════════════════════════════
 
 if __name__ == "__main__":

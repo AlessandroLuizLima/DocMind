@@ -8,14 +8,29 @@ from tkinter import filedialog, messagebox, ttk
 import threading
 import os
 import sys
+import re
+import ctypes
+
+# ── Corrige o borrão em telas com escala do Windows (DPI) ────
+# Precisa rodar ANTES de criar a janela Tk().
+if sys.platform == "win32":
+    try:
+        ctypes.windll.shcore.SetProcessDpiAwareness(1)
+    except Exception:
+        try:
+            ctypes.windll.user32.SetProcessDPIAware()
+        except Exception:
+            pass
 
 # Adiciona o diretório pai ao path para importar os módulos do projeto
 sys.path.append(os.path.dirname(os.path.abspath(__file__)))
 
 from dotenv import load_dotenv
-from langchain_anthropic import ChatAnthropic
 from langchain_core.prompts import ChatPromptTemplate
 import PyPDF2
+
+# Importa a lógica de IA (modos, segurança e roteamento) do DocMindAPI
+from DocMindAPI import MODOS, verificar_seguranca, escolher_api, claude
 
 # Importa funções do banco de dados
 try:
@@ -27,12 +42,6 @@ except Exception:
 # ── Configuração da API ──────────────────────────────────────
 load_dotenv()
 api_key = os.getenv("ANTHROPIC_API_KEY")
-
-llm = ChatAnthropic(
-    model="claude-sonnet-4-6",
-    anthropic_api_key=api_key,
-    temperature=0.5
-)
 
 # ── Cores e fontes ───────────────────────────────────────────
 COR_BG         = "#0f1117"   # fundo principal
@@ -70,32 +79,54 @@ def extrair_texto_pdf(caminho):
     return texto.strip()
 
 
-def gerar_resumo(texto_pdf):
-    """Envia o texto para a API do Claude e retorna o resumo."""
+def _instrucao_do_modo(modo_nome):
+    """Busca a instrução de sistema correspondente ao nome do modo selecionado."""
+    chave = next((k for k, v in MODOS.items() if v["nome"] == modo_nome), "4")
+    return MODOS[chave]["instrucao"]
+
+
+def gerar_resumo(texto_pdf, modo_nome="Detalhado"):
+    """Envia o texto para a API do Claude e retorna o resumo, aplicando o modo selecionado."""
+    instrucao_modo = _instrucao_do_modo(modo_nome)
+
     prompt = ChatPromptTemplate.from_template(
+        "{instrucao_modo}\n\n"
         "Você é o DocMind, assistente especializado em documentos PDF.\n"
         "Responda sempre em português.\n\n"
-        "Resuma o documento abaixo em tópicos claros e objetivos.\n"
-        "Use no máximo 8 tópicos. Seja direto.\n\n"
+        "Resuma o documento abaixo seguindo o estilo definido acima. "
+        "Use tópicos claros quando fizer sentido para o modo escolhido.\n\n"
         "Documento:\n{texto}"
     )
-    chain = prompt | llm
-    resposta = chain.invoke({"texto": texto_pdf[:12000]})
+    chain = prompt | claude
+    resposta = chain.invoke({"instrucao_modo": instrucao_modo, "texto": texto_pdf[:12000]})
     return resposta.content
 
 
-def responder_pergunta(texto_pdf, pergunta):
-    """Responde uma pergunta com base no conteúdo do PDF."""
+def responder_pergunta(texto_pdf, pergunta, modo_nome="Detalhado"):
+    """Responde uma pergunta com base no conteúdo do PDF, aplicando modo,
+    verificação de segurança e roteamento entre Claude/Gemini."""
+    bloqueado, _ = verificar_seguranca(pergunta)
+    if bloqueado:
+        return "Sua pergunta contém conteúdo não permitido. Reformule, por favor.", None
+
+    instrucao_modo = _instrucao_do_modo(modo_nome)
+    modelo, nome_api = escolher_api(pergunta)
+
     prompt = ChatPromptTemplate.from_template(
+        "{instrucao_modo}\n\n"
         "Você é o DocMind, assistente especializado em análise de documentos PDF.\n"
-        "Responda APENAS com base no texto abaixo. Se a informação não estiver no documento, diga claramente.\n"
+        "Responda com base no texto abaixo. Se a informação não estiver no documento, diga claramente.\n"
         "Responda em português de forma objetiva.\n\n"
         "Documento:\n{texto}\n\n"
         "Pergunta: {pergunta}"
     )
-    chain = prompt | llm
-    resposta = chain.invoke({"texto": texto_pdf[:12000], "pergunta": pergunta})
-    return resposta.content
+    chain = prompt | modelo
+    resposta = chain.invoke({
+        "instrucao_modo": instrucao_modo,
+        "texto": texto_pdf[:12000],
+        "pergunta": pergunta
+    })
+    return resposta.content, nome_api
 
 
 # ═══════════════════════════════════════════════════════════════
@@ -203,7 +234,7 @@ class DocMindApp:
         # Seção: modo
         self._secao_label(self.sidebar, "MODO DA IA")
         self.modo_var = tk.StringVar(value="Detalhado")
-        modos = ["Técnico", "Resumido", "Professor", "Detalhado", "Suporte"]
+        modos = [m["nome"] for m in MODOS.values()]
         for modo in modos:
             rb = tk.Radiobutton(
                 self.sidebar, text=modo,
@@ -241,13 +272,15 @@ class DocMindApp:
         self.txt_resumo = tk.Text(
             frame_txt,
             font=FONTE_TEXTO, fg=COR_TEXTO, bg=COR_ENTRADA,
-            relief="flat", bd=0, padx=12, pady=12,
+            relief="flat", bd=0, padx=14, pady=14,
             wrap="word", cursor="arrow", state="disabled"
         )
         scroll_r = tk.Scrollbar(frame_txt, command=self.txt_resumo.yview, bg=COR_PAINEL)
         self.txt_resumo.configure(yscrollcommand=scroll_r.set)
         scroll_r.pack(side="right", fill="y")
         self.txt_resumo.pack(fill="both", expand=True)
+
+        self._configurar_tags_texto(self.txt_resumo, "resumo")
 
         self._placeholder_texto(
             self.txt_resumo,
@@ -270,13 +303,15 @@ class DocMindApp:
         self.txt_historico = tk.Text(
             frame_hist,
             font=FONTE_TEXTO, fg=COR_TEXTO, bg=COR_ENTRADA,
-            relief="flat", bd=0, padx=12, pady=12,
+            relief="flat", bd=0, padx=14, pady=14,
             wrap="word", cursor="arrow", state="disabled"
         )
         scroll_h = tk.Scrollbar(frame_hist, command=self.txt_historico.yview, bg=COR_PAINEL)
         self.txt_historico.configure(yscrollcommand=scroll_h.set)
         scroll_h.pack(side="right", fill="y")
         self.txt_historico.pack(fill="both", expand=True)
+
+        self._configurar_tags_chat(self.txt_historico)
 
         self._placeholder_texto(
             self.txt_historico,
@@ -351,12 +386,13 @@ class DocMindApp:
             messagebox.showwarning("Atenção", "Importe um PDF primeiro.")
             return
 
-        self._status("Gerando resumo...", COR_ACENTO)
-        self._escrever_texto(self.txt_resumo, "⏳ Consultando a IA, aguarde...")
+        modo_nome = self.modo_var.get()
+        self._status(f"Gerando resumo (modo {modo_nome})...", COR_ACENTO)
+        self._placeholder_texto(self.txt_resumo, "Consultando a IA, aguarde...")
 
         def tarefa():
             try:
-                resumo = gerar_resumo(self.texto_pdf)
+                resumo = gerar_resumo(self.texto_pdf, modo_nome)
                 self.root.after(0, lambda: self._escrever_texto(self.txt_resumo, resumo))
                 self.root.after(0, lambda: self._status("Resumo gerado!", COR_SUCESSO))
 
@@ -365,7 +401,7 @@ class DocMindApp:
 
             except Exception as e:
                 self.root.after(0, lambda: self._escrever_texto(
-                    self.txt_resumo, f"Erro ao gerar resumo:\n{e}"
+                    self.txt_resumo, f"Erro ao gerar resumo:\n{e}", erro=True
                 ))
                 self.root.after(0, lambda: self._status("Erro na API", COR_ERRO))
 
@@ -379,30 +415,111 @@ class DocMindApp:
             messagebox.showwarning("Atenção", "Importe um PDF antes de fazer perguntas.")
             return
 
+        modo_nome = self.modo_var.get()
         self.entrada_pergunta.delete(0, "end")
         self._status("Consultando a IA...", COR_ACENTO)
-        self._acrescentar_historico(f"▶ {pergunta}\n", COR_ACENTO)
-        self._acrescentar_historico("⏳ Aguarde...\n", COR_TEXTO2)
+        self._iniciar_pergunta_no_historico(pergunta)
         self.notebook.select(1)
 
         def tarefa():
             try:
-                resposta = responder_pergunta(self.texto_pdf, pergunta)
-                self.root.after(0, lambda: self._substituir_ultima_linha(
-                    f"◀ {resposta}\n{'─'*60}\n", COR_TEXTO
-                ))
+                resposta, nome_api = responder_pergunta(self.texto_pdf, pergunta, modo_nome)
+                self.root.after(0, lambda: self._concluir_resposta_no_historico(resposta, nome_api))
                 self.root.after(0, lambda: self._status("Resposta recebida!", COR_SUCESSO))
 
                 if DB_DISPONIVEL and self.documento_id:
                     inserir_pergunta(self.documento_id, pergunta, resposta, 0, 0)
 
             except Exception as e:
-                self.root.after(0, lambda: self._substituir_ultima_linha(
-                    f"Erro: {e}\n{'─'*60}\n", COR_ERRO
-                ))
+                self.root.after(0, lambda: self._concluir_resposta_no_historico(str(e), erro=True))
                 self.root.after(0, lambda: self._status("Erro na API", COR_ERRO))
 
         threading.Thread(target=tarefa, daemon=True).start()
+
+    # ── Formatação de texto rico (sem markdown cru) ───────────
+    def _configurar_tags_texto(self, widget, prefixo):
+        """Tags usadas para renderizar negrito/listas de forma limpa num Text comum."""
+        widget.tag_configure(f"{prefixo}_texto", font=FONTE_TEXTO, foreground=COR_TEXTO, spacing3=4)
+        widget.tag_configure(f"{prefixo}_texto_negrito", font=("Inter", 11, "bold"), foreground=COR_TEXTO)
+        widget.tag_configure(f"{prefixo}_erro", font=FONTE_TEXTO, foreground=COR_ERRO, spacing3=4)
+        widget.tag_configure(f"{prefixo}_erro_negrito", font=("Inter", 11, "bold"), foreground=COR_ERRO)
+
+    def _configurar_tags_chat(self, widget):
+        widget.tag_configure("user_label", font=("Inter", 9, "bold"), foreground=COR_ACENTO, spacing1=14, spacing3=3)
+        widget.tag_configure("user_texto", font=FONTE_TEXTO, foreground=COR_TEXTO, lmargin1=6, lmargin2=6, spacing3=4)
+        widget.tag_configure("user_texto_negrito", font=("Inter", 11, "bold"), foreground=COR_TEXTO, lmargin1=6, lmargin2=6)
+
+        widget.tag_configure("ia_label", font=("Inter", 9, "bold"), foreground=COR_ACENTO2, spacing1=8, spacing3=3)
+        widget.tag_configure("ia_texto", font=FONTE_TEXTO, foreground=COR_TEXTO, lmargin1=6, lmargin2=6, spacing3=2)
+        widget.tag_configure("ia_texto_negrito", font=("Inter", 11, "bold"), foreground=COR_TEXTO, lmargin1=6, lmargin2=6)
+        widget.tag_configure("ia_pendente", font=("Inter", 11, "italic"), foreground=COR_TEXTO2, lmargin1=6, lmargin2=6)
+        widget.tag_configure("ia_erro", font=FONTE_TEXTO, foreground=COR_ERRO, lmargin1=6, lmargin2=6, spacing3=2)
+        widget.tag_configure("ia_erro_negrito", font=("Inter", 11, "bold"), foreground=COR_ERRO, lmargin1=6, lmargin2=6)
+        widget.tag_configure("ia_meta", font=("Inter", 8), foreground=COR_TEXTO2, spacing3=10)
+
+    def _inserir_com_negrito(self, widget, texto, tag_base, pos="end"):
+        """Insere um trecho de texto trocando **negrito** por negrito real (sem os asteriscos)."""
+        partes = re.split(r'(\*\*[^*]+\*\*)', texto)
+        for parte in partes:
+            if not parte:
+                continue
+            if parte.startswith("**") and parte.endswith("**") and len(parte) > 4:
+                widget.insert(pos, parte[2:-2], (tag_base, f"{tag_base}_negrito"))
+            else:
+                widget.insert(pos, parte, (tag_base,))
+
+    def _inserir_bloco_formatado(self, widget, texto, tag_base, pos="end"):
+        """Insere um bloco de texto multi-linha, convertendo listas com '-'/'*' em bullets
+        reais e negrito **markdown** em negrito de verdade, sem símbolos crus na tela."""
+        linhas = texto.split("\n")
+        for i, linha in enumerate(linhas):
+            stripped = linha.strip()
+            if stripped.startswith("* ") or stripped.startswith("- "):
+                widget.insert(pos, "   •  ", (tag_base,))
+                self._inserir_com_negrito(widget, stripped[2:].strip(), tag_base, pos)
+            elif re.match(r'^\d+[\.\)]\s', stripped):
+                widget.insert(pos, "   ", (tag_base,))
+                self._inserir_com_negrito(widget, stripped, tag_base, pos)
+            elif stripped.startswith("#"):
+                titulo = stripped.lstrip("#").strip()
+                widget.insert(pos, titulo, (tag_base, f"{tag_base}_negrito"))
+            else:
+                self._inserir_com_negrito(widget, linha, tag_base, pos)
+            if i < len(linhas) - 1:
+                widget.insert(pos, "\n")
+
+    # ── Chat de perguntas ──────────────────────────────────────
+    def _iniciar_pergunta_no_historico(self, pergunta):
+        self.txt_historico.config(state="normal")
+        if self.txt_historico.index("end-1c") != "1.0":
+            self.txt_historico.insert("end", "\n")
+        self.txt_historico.insert("end", "Você\n", ("user_label",))
+        self._inserir_bloco_formatado(self.txt_historico, pergunta, "user_texto")
+        self.txt_historico.insert("end", "\n")
+        self.txt_historico.insert("end", "DocMind\n", ("ia_label",))
+        self.txt_historico.mark_set("resp_ini", "end-1c")
+        self.txt_historico.mark_gravity("resp_ini", "left")
+        self.txt_historico.insert("end", "Consultando a IA...", ("ia_pendente",))
+        self.txt_historico.mark_set("resp_fim", "end-1c")
+        self.txt_historico.mark_gravity("resp_fim", "right")
+        self.txt_historico.see("end")
+        self.txt_historico.config(state="disabled")
+
+    def _concluir_resposta_no_historico(self, texto, nome_api=None, erro=False):
+        self.txt_historico.config(state="normal")
+        self.txt_historico.delete("resp_ini", "resp_fim")
+        self.txt_historico.mark_set("insert", "resp_ini")
+
+        tag_base = "ia_erro" if erro else "ia_texto"
+        self._inserir_bloco_formatado(self.txt_historico, texto, tag_base, pos="insert")
+
+        if nome_api and not erro:
+            self.txt_historico.insert("insert", f"\nvia {nome_api}", ("ia_meta",))
+
+        self.txt_historico.mark_unset("resp_ini")
+        self.txt_historico.mark_unset("resp_fim")
+        self.txt_historico.see("end")
+        self.txt_historico.config(state="disabled")
 
     # ── Helpers de UI ────────────────────────────────────────
     def _botao(self, pai, texto, comando, icone="", cor=None):
@@ -471,24 +588,11 @@ class DocMindApp:
         widget.insert("end", texto)
         widget.config(state="disabled", fg=COR_TEXTO2)
 
-    def _escrever_texto(self, widget, texto):
+    def _escrever_texto(self, widget, texto, erro=False):
         widget.config(state="normal", fg=COR_TEXTO)
         widget.delete("1.0", "end")
-        widget.insert("end", texto)
+        self._inserir_bloco_formatado(widget, texto, "resumo_erro" if erro else "resumo_texto")
         widget.config(state="disabled")
-
-    def _acrescentar_historico(self, texto, cor):
-        self.txt_historico.config(state="normal", fg=COR_TEXTO)
-        self.txt_historico.insert("end", texto)
-        self.txt_historico.see("end")
-        self.txt_historico.config(state="disabled")
-
-    def _substituir_ultima_linha(self, texto, cor):
-        self.txt_historico.config(state="normal")
-        self.txt_historico.delete("end-2l", "end-1c")
-        self.txt_historico.insert("end", texto)
-        self.txt_historico.see("end")
-        self.txt_historico.config(state="disabled")
 
     def _limpar_historico(self):
         self.txt_historico.config(state="normal")

@@ -1,3 +1,15 @@
+# Variáveis de ambiente (chaves de API)
 .env
-__pycache__
-../__pycache__
+
+# Python
+__pycache__/
+*.pyc
+*.pyo
+
+# Ambiente virtual
+venv/
+.venv/
+
+# IDE
+.vscode/
+.idea/

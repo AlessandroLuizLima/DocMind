@@ -1,8 +1,3 @@
-# ═══════════════════════════════════════════════════════════════
-# DocMind — Interface Gráfica (Tkinter)
-# Dark mode | Importar PDF | Resumo via IA | Perguntas e Respostas
-# ═══════════════════════════════════════════════════════════════
-
 import tkinter as tk
 from tkinter import filedialog, messagebox, ttk
 import threading

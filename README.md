@@ -111,9 +111,16 @@ pytest
 
 ## Status Atual do Projeto
 
-- [x] Interface gráfica funcional (Tkinter, modo escuro)
-- [x] Integração com APIs de IA (Claude e Gemini via LangChain)
-- [x] Persistência em PostgreSQL
-- [x] Módulo de segurança centralizado com validação de entradas
-- [x] Suíte de testes automatizados (Pytest) e pipeline de CI/CD (GitHub Actions)
-- [ ] Deploy/distribuição final
+Concluído:
+* Interface gráfica funcional (Tkinter, modo escuro)
+* Integração com APIs de IA (Claude e Gemini via LangChain)
+* Persistência em PostgreSQL
+* Módulo de segurança centralizado com validação de entradas
+* Suíte de testes automatizados (Pytest) e pipeline de CI/CD (GitHub Actions)
+
+Em desenvolvimento:
+* Aba de histórico na interface
+* Modos de IA mais técnicos e específicos
+* Correção do modo resumo
+* Exemplo obrigatório na aba de perguntas
+* Deploy/distribuição final

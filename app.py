@@ -1,3 +1,8 @@
+# ═══════════════════════════════════════════════════════════════
+# DocMind — Interface Gráfica (Tkinter)
+# Dark mode | Importar PDF | Resumo via IA | Perguntas e Respostas
+# ═══════════════════════════════════════════════════════════════
+
 import tkinter as tk
 from tkinter import filedialog, messagebox, ttk
 import threading
@@ -61,17 +66,70 @@ FONTE_PEQUENA  = ("Inter", 9)
 
 
 # ═══════════════════════════════════════════════════════════════
+# COMPONENTES DE UI REUTILIZÁVEIS (tooltip + campo com máscara)
+# ═══════════════════════════════════════════════════════════════
+
+class Tooltip:
+    """Dica de contexto que aparece ao passar o mouse sobre um widget."""
+
+    def __init__(self, widget, texto):
+        self.widget = widget
+        self.texto = texto
+        self.janela = None
+        widget.bind("<Enter>", self._mostrar)
+        widget.bind("<Leave>", self._esconder)
+        widget.bind("<ButtonPress>", self._esconder)
+
+    def _mostrar(self, event=None):
+        if self.janela or not self.texto:
+            return
+        x = self.widget.winfo_rootx() + 4
+        y = self.widget.winfo_rooty() + self.widget.winfo_height() + 6
+        self.janela = tk.Toplevel(self.widget)
+        self.janela.wm_overrideredirect(True)
+        self.janela.wm_geometry(f"+{x}+{y}")
+        tk.Label(
+            self.janela, text=self.texto, font=FONTE_PEQUENA,
+            fg=COR_TEXTO, bg=COR_PAINEL, bd=1, relief="solid",
+            padx=8, pady=5, wraplength=240, justify="left"
+        ).pack()
+
+    def _esconder(self, event=None):
+        if self.janela:
+            self.janela.destroy()
+            self.janela = None
+
+
+class CampoNumerico(tk.Entry):
+    """Entry que só aceita dígitos — máscara numérica usada no intervalo de páginas."""
+
+    def __init__(self, master, **kwargs):
+        super().__init__(master, **kwargs)
+        self.bind("<KeyRelease>", self._filtrar)
+
+    def _filtrar(self, event):
+        if event.keysym in ("BackSpace", "Delete", "Left", "Right", "Tab", "Shift_L", "Shift_R"):
+            return
+        digitos = re.sub(r"\D", "", self.get())[:4]
+        if digitos != self.get():
+            pos = self.index("insert")
+            self.delete(0, "end")
+            self.insert(0, digitos)
+            self.icursor(min(pos, len(digitos)))
+
+
+# ═══════════════════════════════════════════════════════════════
 # FUNÇÕES DE IA
 # ═══════════════════════════════════════════════════════════════
 
-def extrair_texto_pdf(caminho):
-    """Extrai texto de todas as páginas do PDF."""
-    texto = ""
+def extrair_paginas_pdf(caminho):
+    """Extrai o texto de cada página do PDF separadamente, como uma lista."""
+    paginas = []
     with open(caminho, "rb") as f:
         leitor = PyPDF2.PdfReader(f)
         for pagina in leitor.pages:
-            texto += pagina.extract_text() or ""
-    return texto.strip()
+            paginas.append((pagina.extract_text() or "").strip())
+    return paginas
 
 
 def _instrucao_do_modo(modo_nome):
@@ -132,11 +190,12 @@ class DocMindApp:
     def __init__(self, root):
         self.root = root
         self.root.title("DocMind")
-        self.root.geometry("980x720")
-        self.root.minsize(820, 600)
+        self.root.geometry("980x760")
+        self.root.minsize(820, 640)
         self.root.configure(bg=COR_BG)
 
-        self.texto_pdf    = ""
+        self.paginas_pdf  = []   # lista com o texto de cada página do PDF atual
+        self.texto_pdf    = ""   # texto completo (todas as páginas), usado nas Perguntas
         self.nome_arquivo = ""
         self.documento_id = None
 
@@ -182,6 +241,7 @@ class DocMindApp:
             font=FONTE_PEQUENA, fg=COR_ERRO, bg=COR_PAINEL
         )
         self.lbl_api.pack(side="right", padx=20)
+        Tooltip(self.lbl_api, "Mostra se a chave da API do Claude foi encontrada no .env. Sem isso, a geração de resumo não funciona.")
         self._verificar_api()
 
     def _sidebar(self, pai):
@@ -200,15 +260,53 @@ class DocMindApp:
         )
         self.lbl_arquivo.pack(anchor="w", padx=16, pady=(0, 10))
 
-        self._botao(
+        btn_importar = self._botao(
             self.sidebar, "Importar PDF",
             self._importar_pdf, icone="📂"
-        ).pack(fill="x", padx=16, pady=(0, 6))
+        )
+        btn_importar.pack(fill="x", padx=16, pady=(0, 6))
+        Tooltip(btn_importar, "Selecione um arquivo .pdf do seu computador para começar a análise.")
 
-        self._botao(
+        # Intervalo de páginas (campo com máscara numérica, uso real no resumo)
+        tk.Label(
+            self.sidebar, text="Resumir páginas (opcional)",
+            font=FONTE_PEQUENA, fg=COR_TEXTO2, bg=COR_PAINEL
+        ).pack(anchor="w", padx=16, pady=(2, 2))
+
+        frame_intervalo = tk.Frame(self.sidebar, bg=COR_PAINEL)
+        frame_intervalo.pack(fill="x", padx=16, pady=(0, 6))
+
+        self.campo_pag_inicio = CampoNumerico(
+            frame_intervalo, width=5, justify="center",
+            font=FONTE_TEXTO, fg=COR_TEXTO, bg=COR_ENTRADA,
+            relief="flat", bd=0, insertbackground=COR_ACENTO
+        )
+        self.campo_pag_inicio.pack(side="left", ipady=6)
+
+        tk.Label(
+            frame_intervalo, text="até",
+            font=FONTE_PEQUENA, fg=COR_TEXTO2, bg=COR_PAINEL
+        ).pack(side="left", padx=6)
+
+        self.campo_pag_fim = CampoNumerico(
+            frame_intervalo, width=5, justify="center",
+            font=FONTE_TEXTO, fg=COR_TEXTO, bg=COR_ENTRADA,
+            relief="flat", bd=0, insertbackground=COR_ACENTO
+        )
+        self.campo_pag_fim.pack(side="left", ipady=6)
+
+        Tooltip(
+            frame_intervalo,
+            "Restringe o resumo a um intervalo de páginas do PDF (ex: 5 até 20), "
+            "útil em documentos longos. Deixe os dois em branco para resumir o documento inteiro."
+        )
+
+        btn_resumo = self._botao(
             self.sidebar, "Gerar Resumo",
             self._gerar_resumo, icone="✦", cor=COR_ACENTO2
-        ).pack(fill="x", padx=16, pady=(0, 16))
+        )
+        btn_resumo.pack(fill="x", padx=16, pady=(4, 16))
+        Tooltip(btn_resumo, "Envia o texto extraído do PDF (ou só o intervalo de páginas informado) para a IA, no modo selecionado abaixo.")
 
         # Separador
         tk.Frame(self.sidebar, bg=COR_BORDA, height=1).pack(fill="x", padx=16, pady=8)
@@ -222,6 +320,11 @@ class DocMindApp:
             self.sidebar, "Banco",
             "Conectado" if DB_DISPONIVEL else "Desconectado"
         )
+        Tooltip(
+            self.info_db[1],
+            "Indica se a conexão com o banco PostgreSQL foi estabelecida. "
+            "Se estiver desconectado, o app continua funcionando, mas o histórico não é salvo."
+        )
 
         # Separador
         tk.Frame(self.sidebar, bg=COR_BORDA, height=1).pack(fill="x", padx=16, pady=8)
@@ -229,16 +332,16 @@ class DocMindApp:
         # Seção: modo
         self._secao_label(self.sidebar, "MODO DA IA")
         self.modo_var = tk.StringVar(value="Detalhado")
-        modos = [m["nome"] for m in MODOS.values()]
-        for modo in modos:
+        for chave, modo in MODOS.items():
             rb = tk.Radiobutton(
-                self.sidebar, text=modo,
-                variable=self.modo_var, value=modo,
+                self.sidebar, text=modo["nome"],
+                variable=self.modo_var, value=modo["nome"],
                 font=FONTE_PEQUENA, fg=COR_TEXTO, bg=COR_PAINEL,
                 selectcolor=COR_ENTRADA, activebackground=COR_PAINEL,
                 activeforeground=COR_ACENTO, cursor="hand2"
             )
             rb.pack(anchor="w", padx=20, pady=1)
+            Tooltip(rb, modo["instrucao"])
 
     def _area_principal(self, pai):
         area = tk.Frame(pai, bg=COR_BG)
@@ -329,11 +432,14 @@ class DocMindApp:
         )
         self.entrada_pergunta.pack(side="left", fill="x", expand=True, ipady=8, padx=(0, 8))
         self.entrada_pergunta.bind("<Return>", lambda e: self._fazer_pergunta())
+        Tooltip(self.entrada_pergunta, "Digite uma pergunta sobre o conteúdo do PDF importado e pressione Enter ou clique em Perguntar.")
 
-        self._botao(
+        btn_perguntar = self._botao(
             frame_entrada, "Perguntar",
             self._fazer_pergunta, icone="→"
-        ).pack(side="right")
+        )
+        btn_perguntar.pack(side="right")
+        Tooltip(btn_perguntar, "Envia a pergunta para a IA, usando o modo selecionado na barra lateral. Considera o documento inteiro, não o intervalo de páginas.")
 
     # ── Ações ────────────────────────────────────────────────
     def _importar_pdf(self):
@@ -344,59 +450,122 @@ class DocMindApp:
         if not caminho:
             return
 
+        # Validação de dados inválidos: garante que o arquivo é realmente um PDF
+        if not caminho.lower().endswith(".pdf"):
+            messagebox.showerror("Arquivo inválido", "Selecione um arquivo com extensão .pdf.")
+            return
+
         self._status("Lendo PDF...", COR_ACENTO2)
         try:
-            self.texto_pdf    = extrair_texto_pdf(caminho)
-            self.nome_arquivo = os.path.basename(caminho)
+            self.paginas_pdf   = extrair_paginas_pdf(caminho)
+            self.texto_pdf     = "\n".join(self.paginas_pdf).strip()
+            self.nome_arquivo  = os.path.basename(caminho)
+            num_paginas        = len(self.paginas_pdf)
 
-            # Contagem de páginas
-            with open(caminho, "rb") as f:
-                leitor = PyPDF2.PdfReader(f)
-                num_paginas = len(leitor.pages)
+            # Validação de dados inválidos: PDF sem texto extraível (ex: escaneado sem OCR)
+            if not self.texto_pdf:
+                messagebox.showwarning(
+                    "Aviso",
+                    "Não foi possível extrair texto deste PDF.\n"
+                    "Ele pode ser uma imagem escaneada sem OCR — o resumo pode não funcionar corretamente."
+                )
+
+            # Limpa o intervalo de páginas do documento anterior
+            self.campo_pag_inicio.delete(0, "end")
+            self.campo_pag_fim.delete(0, "end")
 
             # Atualiza sidebar
             self.lbl_arquivo.config(text=self.nome_arquivo, fg=COR_TEXTO)
             self.info_paginas[1].config(text=str(num_paginas))
             self.info_chars[1].config(text=f"{len(self.texto_pdf):,}")
 
-            # Salva no banco
+            # Salva no banco — tratamento de erro de conexão/acesso ao banco
+            self.documento_id = None
             if DB_DISPONIVEL:
-                self.documento_id = inserir_documento(
-                    self.nome_arquivo, caminho, self.texto_pdf, num_paginas
-                )
+                try:
+                    self.documento_id = inserir_documento(
+                        self.nome_arquivo, caminho, self.texto_pdf, num_paginas
+                    )
+                except Exception as e:
+                    self._status(f"PDF carregado, mas falha ao salvar no banco: {e}", COR_ERRO)
 
             self._placeholder_texto(
                 self.txt_resumo,
                 f"PDF '{self.nome_arquivo}' carregado com sucesso.\nClique em 'Gerar Resumo' para continuar."
             )
             self._limpar_historico()
-            self._status(f"PDF carregado: {self.nome_arquivo}", COR_SUCESSO)
+            if self.documento_id is not None or not DB_DISPONIVEL:
+                self._status(f"PDF carregado: {self.nome_arquivo}", COR_SUCESSO)
 
         except Exception as e:
             messagebox.showerror("Erro", f"Não foi possível ler o PDF:\n{e}")
             self._status("Erro ao ler PDF", COR_ERRO)
+
+    def _validar_intervalo_paginas(self):
+        """Valida o intervalo de páginas informado.
+        Retorna (ok, inicio_ou_None, fim_ou_None, mensagem_erro_ou_None)."""
+        ini_txt = self.campo_pag_inicio.get().strip()
+        fim_txt = self.campo_pag_fim.get().strip()
+
+        if not ini_txt and not fim_txt:
+            return True, None, None, None  # nenhum intervalo informado = documento inteiro
+
+        if not ini_txt or not fim_txt:
+            return False, None, None, "Preencha as duas páginas do intervalo (início e fim), ou deixe ambas em branco."
+
+        inicio, fim = int(ini_txt), int(fim_txt)
+        total_paginas = len(self.paginas_pdf)
+
+        if inicio < 1 or fim < 1:
+            return False, None, None, "As páginas devem ser maiores que 0."
+        if inicio > fim:
+            return False, None, None, "A página inicial não pode ser maior que a final."
+        if total_paginas and fim > total_paginas:
+            return False, None, None, f"O documento tem {total_paginas} página(s) — o intervalo não pode ultrapassar isso."
+
+        return True, inicio, fim, None
 
     def _gerar_resumo(self):
         if not self.texto_pdf:
             messagebox.showwarning("Atenção", "Importe um PDF primeiro.")
             return
 
+        # Validação de dados inválidos: intervalo de páginas precisa ser coerente
+        ok, pag_inicio, pag_fim, erro_msg = self._validar_intervalo_paginas()
+        if not ok:
+            messagebox.showerror("Intervalo inválido", erro_msg)
+            return
+
+        if pag_inicio and pag_fim:
+            texto_para_resumo = "\n".join(self.paginas_pdf[pag_inicio - 1:pag_fim]).strip()
+            if not texto_para_resumo:
+                messagebox.showwarning("Aviso", "Não há texto extraível nas páginas selecionadas.")
+                return
+            descricao_intervalo = f" (páginas {pag_inicio}–{pag_fim})"
+        else:
+            texto_para_resumo = self.texto_pdf
+            descricao_intervalo = ""
+
         modo_nome = self.modo_var.get()
-        self._status(f"Gerando resumo (modo {modo_nome})...", COR_ACENTO)
+        self._status(f"Gerando resumo{descricao_intervalo} — modo {modo_nome}...", COR_ACENTO)
         self._placeholder_texto(self.txt_resumo, "Consultando a IA, aguarde...")
 
         def tarefa():
             try:
-                resumo = gerar_resumo(self.texto_pdf, modo_nome)
+                resumo = gerar_resumo(texto_para_resumo, modo_nome)
                 self.root.after(0, lambda: self._escrever_texto(self.txt_resumo, resumo))
                 self.root.after(0, lambda: self._status("Resumo gerado!", COR_SUCESSO))
 
                 if DB_DISPONIVEL and self.documento_id:
-                    inserir_resumo(self.documento_id, resumo, 0, 0)
+                    try:
+                        inserir_resumo(self.documento_id, resumo, 0, 0)
+                    except Exception as e:
+                        self.root.after(0, lambda: self._status(f"Resumo gerado, mas falha ao salvar no banco: {e}", COR_ERRO))
 
             except Exception as e:
+                # Tratamento de erro de conexão/acesso à API de IA
                 self.root.after(0, lambda: self._escrever_texto(
-                    self.txt_resumo, f"Erro ao gerar resumo:\n{e}", erro=True
+                    self.txt_resumo, f"Erro ao consultar a IA:\n{e}", erro=True
                 ))
                 self.root.after(0, lambda: self._status("Erro na API", COR_ERRO))
 
@@ -404,7 +573,10 @@ class DocMindApp:
 
     def _fazer_pergunta(self):
         pergunta = self.entrada_pergunta.get().strip()
+
+        # Validação de dados inválidos: pergunta vazia
         if not pergunta:
+            messagebox.showwarning("Atenção", "Digite uma pergunta antes de enviar.")
             return
         if not self.texto_pdf:
             messagebox.showwarning("Atenção", "Importe um PDF antes de fazer perguntas.")
@@ -423,9 +595,13 @@ class DocMindApp:
                 self.root.after(0, lambda: self._status("Resposta recebida!", COR_SUCESSO))
 
                 if DB_DISPONIVEL and self.documento_id:
-                    inserir_pergunta(self.documento_id, pergunta, resposta, 0, 0)
+                    try:
+                        inserir_pergunta(self.documento_id, pergunta, resposta, 0, 0)
+                    except Exception as e:
+                        self.root.after(0, lambda: self._status(f"Resposta recebida, mas falha ao salvar no banco: {e}", COR_ERRO))
 
             except Exception as e:
+                # Tratamento de erro de conexão/acesso à API de IA
                 self.root.after(0, lambda: self._concluir_resposta_no_historico(str(e), erro=True))
                 self.root.after(0, lambda: self._status("Erro na API", COR_ERRO))
 

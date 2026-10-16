@@ -47,6 +47,22 @@ A proposta central da automação é eliminar a leitura manual e exaustiva de do
 **Controle de Versão**
 - Git / GitHub
 
+## Funcionalidades
+
+**Modos da IA** (cada modo muda o tipo de saída, tanto no resumo quanto nas perguntas):
+
+- **Extração de Dados**: lista datas, valores, nomes, prazos, definições e referências.
+- **Resumido**: respostas curtas e resumo enxuto que cobre o documento inteiro.
+- **Estudo**: explica como um professor e gera flashcards e questões de revisão com gabarito.
+- **Detalhado**: resposta e resumo aprofundados, seção por seção.
+- **Revisão Crítica**: aponta lacunas, ambiguidades, contradições e riscos.
+
+**Resumos completos**: documentos longos são divididos em partes, cada parte é resumida e depois os resumos são unificados.
+
+**Exemplo prático**: toda resposta da aba Perguntas termina com um exemplo (pode ser desligado na barra lateral). As perguntas consideram as mensagens anteriores da conversa.
+
+**Histórico**: todas as conversas e resumos ficam salvos no PostgreSQL. Na aba Histórico é possível buscar, filtrar, abrir e continuar uma conversa, renomear e excluir.
+
 ## Instruções de Instalação, Dependências e Execução
 
 ### Pré-requisitos
@@ -85,13 +101,16 @@ pip install -r requirements.txt
 Crie um arquivo `.env` na raiz do projeto com as seguintes chaves:
 
 ```
-CLAUDE_API_KEY=sua_chave_aqui
-GEMINI_API_KEY=sua_chave_aqui
+ANTHROPIC_API_KEY=sua_chave_aqui
+GOOGLE_API_KEY=sua_chave_aqui
 DB_HOST=localhost
+DB_PORT=5432
 DB_NAME=docmind
 DB_USER=seu_usuario
 DB_PASSWORD=sua_senha
 ```
+
+Os nomes `CLAUDE_API_KEY` e `GEMINI_API_KEY` também são aceitos. Se a chave do Google não for informada, todas as perguntas são respondidas pelo Claude.
 
 ### 5. Configurar o banco de dados
 
@@ -111,16 +130,9 @@ pytest
 
 ## Status Atual do Projeto
 
-Concluído:
-* Interface gráfica funcional (Tkinter, modo escuro)
-* Integração com APIs de IA (Claude e Gemini via LangChain)
-* Persistência em PostgreSQL
-* Módulo de segurança centralizado com validação de entradas
-* Suíte de testes automatizados (Pytest) e pipeline de CI/CD (GitHub Actions)
-
-Em desenvolvimento:
-* Aba de histórico na interface
-* Modos de IA mais técnicos e específicos
-* Correção do modo resumo
-* Exemplo obrigatório na aba de perguntas
-* Deploy/distribuição final
+- [x] Interface gráfica funcional (Tkinter, modo escuro)
+- [x] Integração com APIs de IA (Claude e Gemini via LangChain)
+- [x] Persistência em PostgreSQL
+- [x] Módulo de segurança centralizado com validação de entradas
+- [x] Suíte de testes automatizados (Pytest) e pipeline de CI/CD (GitHub Actions)
+- [ ] Deploy/distribuição final

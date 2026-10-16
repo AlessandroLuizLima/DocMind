@@ -1,7 +1,11 @@
 anthropic
+langchain-core
+langchain-anthropic
+langchain-google-genai
+python-dotenv
 psycopg2-binary
 PyPDF2
-gTTS
-playsound
+requests
 Pillow
 win11toast
+pytest

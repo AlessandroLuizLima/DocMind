@@ -13,3 +13,5 @@ venv/
 # IDE
 .vscode/
 .idea/
+# PDFs baixados por link
+pdfs_baixados/

@@ -1,13 +1,19 @@
+import os
 import psycopg2
 from psycopg2.extras import RealDictCursor
+from dotenv import load_dotenv
+
+load_dotenv()
 
 DB_CONFIG = {
-    "host":     "127.0.0.1",
-    "port":     5432,
-    "dbname":   "docmind",
-    "user":     "postgres",
-    "password": "postgres"
+    "host":     os.getenv("DB_HOST", "127.0.0.1"),
+    "port":     int(os.getenv("DB_PORT", "5432")),
+    "dbname":   os.getenv("DB_NAME", "docmind"),
+    "user":     os.getenv("DB_USER", "postgres"),
+    "password": os.getenv("DB_PASSWORD", "postgres"),
 }
+
+SCHEMA_PATH = os.path.join(os.path.dirname(os.path.abspath(__file__)), "schema.sql")
 
 def conectar():
     return psycopg2.connect(**DB_CONFIG)
@@ -76,6 +82,124 @@ def listar_perguntas(documento_id):
             cur.execute(sql, (documento_id,))
             return cur.fetchall()
         
+
+def criar_tabelas():
+    """Cria as tabelas (se ainda não existirem) a partir do schema.sql."""
+    with open(SCHEMA_PATH, encoding="utf-8") as f:
+        sql = f.read()
+    with conectar() as conn:
+        with conn.cursor() as cur:
+            cur.execute(sql)
+
+
+def buscar_documento(documento_id):
+    sql = """
+        SELECT id, nome_arquivo, caminho, texto_extraido, paginas
+        FROM documentos WHERE id = %s;
+    """
+    with conectar() as conn:
+        with conn.cursor(cursor_factory=RealDictCursor) as cur:
+            cur.execute(sql, (documento_id,))
+            return cur.fetchone()
+
+
+# ── Histórico de conversas ───────────────────────────────────
+
+def criar_conversa(documento_id, titulo, tipo="perguntas", modo=None):
+    sql = """
+        INSERT INTO conversas (documento_id, titulo, tipo, modo)
+        VALUES (%s, %s, %s, %s)
+        RETURNING id;
+    """
+    with conectar() as conn:
+        with conn.cursor() as cur:
+            cur.execute(sql, (documento_id, titulo[:200], tipo, modo))
+            return cur.fetchone()[0]
+
+
+def inserir_mensagem(conversa_id, papel, conteudo, modo=None, api=None):
+    sql = """
+        INSERT INTO mensagens (conversa_id, papel, conteudo, modo, api)
+        VALUES (%s, %s, %s, %s, %s)
+        RETURNING id;
+    """
+    with conectar() as conn:
+        with conn.cursor() as cur:
+            cur.execute(sql, (conversa_id, papel, conteudo, modo, api))
+            msg_id = cur.fetchone()[0]
+            cur.execute(
+                "UPDATE conversas SET data_atualizacao = NOW() WHERE id = %s;",
+                (conversa_id,)
+            )
+            return msg_id
+
+
+def listar_conversas(busca=None, tipo=None, limite=200):
+    """Lista conversas e resumos, mais recentes primeiro.
+    busca: filtra por título, nome do arquivo ou conteúdo das mensagens.
+    tipo: 'perguntas', 'resumo' ou None (todos)."""
+    padrao = None
+    if busca and busca.strip():
+        escapado = (busca.strip().replace("\\", "\\\\")
+                    .replace("%", "\\%").replace("_", "\\_"))
+        padrao = f"%{escapado}%"
+    sql = """
+        SELECT c.id, c.titulo, c.tipo, c.modo, c.documento_id,
+               d.nome_arquivo, c.data_atualizacao,
+               (SELECT COUNT(*) FROM mensagens m WHERE m.conversa_id = c.id) AS total_mensagens
+        FROM conversas c
+        JOIN documentos d ON d.id = c.documento_id
+        WHERE (%(tipo)s::text IS NULL OR c.tipo = %(tipo)s::text)
+          AND (%(padrao)s::text IS NULL
+               OR c.titulo ILIKE %(padrao)s::text
+               OR d.nome_arquivo ILIKE %(padrao)s::text
+               OR EXISTS (SELECT 1 FROM mensagens m
+                          WHERE m.conversa_id = c.id AND m.conteudo ILIKE %(padrao)s::text))
+        ORDER BY c.data_atualizacao DESC
+        LIMIT %(limite)s;
+    """
+    with conectar() as conn:
+        with conn.cursor(cursor_factory=RealDictCursor) as cur:
+            cur.execute(sql, {"tipo": tipo, "padrao": padrao, "limite": limite})
+            return cur.fetchall()
+
+
+def buscar_conversa(conversa_id):
+    sql = """
+        SELECT c.id, c.titulo, c.tipo, c.modo, c.documento_id, d.nome_arquivo
+        FROM conversas c JOIN documentos d ON d.id = c.documento_id
+        WHERE c.id = %s;
+    """
+    with conectar() as conn:
+        with conn.cursor(cursor_factory=RealDictCursor) as cur:
+            cur.execute(sql, (conversa_id,))
+            return cur.fetchone()
+
+
+def listar_mensagens(conversa_id):
+    sql = """
+        SELECT papel, conteudo, modo, api, data_envio FROM mensagens
+        WHERE conversa_id = %s ORDER BY id ASC;
+    """
+    with conectar() as conn:
+        with conn.cursor(cursor_factory=RealDictCursor) as cur:
+            cur.execute(sql, (conversa_id,))
+            return cur.fetchall()
+
+
+def renomear_conversa(conversa_id, novo_titulo):
+    with conectar() as conn:
+        with conn.cursor() as cur:
+            cur.execute("UPDATE conversas SET titulo = %s WHERE id = %s;",
+                        (novo_titulo.strip()[:200], conversa_id))
+
+
+def excluir_conversa(conversa_id):
+    with conectar() as conn:
+        with conn.cursor() as cur:
+            cur.execute("DELETE FROM conversas WHERE id = %s;", (conversa_id,))
+
+
 if __name__ == "__main__":
     print("=" * 50)
     print("  DocMind — Teste do Banco de Dados")

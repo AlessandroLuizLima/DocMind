@@ -1,15 +1,12 @@
-# ═══════════════════════════════════════════════════════════════
-# DocMind — Interface Gráfica (Tkinter)
-# Dark mode | Importar PDF | Resumo via IA | Perguntas e Respostas
-# ═══════════════════════════════════════════════════════════════
-
 import tkinter as tk
-from tkinter import filedialog, messagebox, ttk
+from tkinter import filedialog, messagebox, ttk, simpledialog
 import threading
 import os
 import sys
 import re
 import ctypes
+import uuid
+from urllib.parse import urlparse, unquote
 
 # ── Corrige o borrão em telas com escala do Windows (DPI) ────
 # Precisa rodar ANTES de criar a janela Tk().
@@ -26,22 +23,25 @@ if sys.platform == "win32":
 sys.path.append(os.path.dirname(os.path.abspath(__file__)))
 
 from dotenv import load_dotenv
-from langchain_core.prompts import ChatPromptTemplate
 import PyPDF2
+import requests
+from datetime import datetime
 
-# Importa a lógica de IA (modos, segurança e roteamento) do DocMindAPI
-from DocMindAPI import MODOS, verificar_seguranca, escolher_api, claude
+# Importa a lógica de IA (modos, resumo, perguntas, segurança e roteamento)
+from DocMindAPI import (
+    MODOS, ANTHROPIC_API_KEY, nomes_dos_modos, gerar_resumo, responder_pergunta
+)
 
-# Importa funções do banco de dados
+# Importa funções do banco de dados (cria as tabelas na primeira execução)
 try:
-    from database.database import inserir_documento, inserir_resumo, inserir_pergunta
+    from database import database as db
+    db.criar_tabelas()
     DB_DISPONIVEL = True
 except Exception:
+    db = None
     DB_DISPONIVEL = False
 
-# ── Configuração da API ──────────────────────────────────────
 load_dotenv()
-api_key = os.getenv("ANTHROPIC_API_KEY")
 
 # ── Cores e fontes ───────────────────────────────────────────
 COR_BG         = "#0f1117"   # fundo principal
@@ -64,122 +64,86 @@ FONTE_TEXTO    = ("Inter", 11)
 FONTE_BTN      = ("Inter", 10, "bold")
 FONTE_PEQUENA  = ("Inter", 9)
 
-
-# ═══════════════════════════════════════════════════════════════
-# COMPONENTES DE UI REUTILIZÁVEIS (tooltip + campo com máscara)
-# ═══════════════════════════════════════════════════════════════
-
-class Tooltip:
-    """Dica de contexto que aparece ao passar o mouse sobre um widget."""
-
-    def __init__(self, widget, texto):
-        self.widget = widget
-        self.texto = texto
-        self.janela = None
-        widget.bind("<Enter>", self._mostrar)
-        widget.bind("<Leave>", self._esconder)
-        widget.bind("<ButtonPress>", self._esconder)
-
-    def _mostrar(self, event=None):
-        if self.janela or not self.texto:
-            return
-        x = self.widget.winfo_rootx() + 4
-        y = self.widget.winfo_rooty() + self.widget.winfo_height() + 6
-        self.janela = tk.Toplevel(self.widget)
-        self.janela.wm_overrideredirect(True)
-        self.janela.wm_geometry(f"+{x}+{y}")
-        tk.Label(
-            self.janela, text=self.texto, font=FONTE_PEQUENA,
-            fg=COR_TEXTO, bg=COR_PAINEL, bd=1, relief="solid",
-            padx=8, pady=5, wraplength=240, justify="left"
-        ).pack()
-
-    def _esconder(self, event=None):
-        if self.janela:
-            self.janela.destroy()
-            self.janela = None
-
-
-class CampoNumerico(tk.Entry):
-    """Entry que só aceita dígitos — máscara numérica usada no intervalo de páginas."""
-
-    def __init__(self, master, **kwargs):
-        super().__init__(master, **kwargs)
-        self.bind("<KeyRelease>", self._filtrar)
-
-    def _filtrar(self, event):
-        if event.keysym in ("BackSpace", "Delete", "Left", "Right", "Tab", "Shift_L", "Shift_R"):
-            return
-        digitos = re.sub(r"\D", "", self.get())[:4]
-        if digitos != self.get():
-            pos = self.index("insert")
-            self.delete(0, "end")
-            self.insert(0, digitos)
-            self.icursor(min(pos, len(digitos)))
+# ── Download de PDF por link ──────────────────────────────────
+PASTA_DOWNLOADS = os.path.join(os.path.dirname(os.path.abspath(__file__)), "pdfs_baixados")
+os.makedirs(PASTA_DOWNLOADS, exist_ok=True)
+TAMANHO_MAX_PDF = 40 * 1024 * 1024  # 40 MB
 
 
 # ═══════════════════════════════════════════════════════════════
-# FUNÇÕES DE IA
+# FUNÇÕES AUXILIARES
 # ═══════════════════════════════════════════════════════════════
 
-def extrair_paginas_pdf(caminho):
-    """Extrai o texto de cada página do PDF separadamente, como uma lista."""
-    paginas = []
+def extrair_texto_pdf(caminho):
+    """Extrai texto de todas as páginas do PDF."""
+    texto = ""
     with open(caminho, "rb") as f:
         leitor = PyPDF2.PdfReader(f)
         for pagina in leitor.pages:
-            paginas.append((pagina.extract_text() or "").strip())
-    return paginas
+            texto += pagina.extract_text() or ""
+    return texto.strip()
 
 
-def _instrucao_do_modo(modo_nome):
-    """Busca a instrução de sistema correspondente ao nome do modo selecionado."""
-    chave = next((k for k, v in MODOS.items() if v["nome"] == modo_nome), "4")
-    return MODOS[chave]["instrucao"]
+def _nome_arquivo_da_url(url, content_disposition):
+    """Descobre um nome de arquivo razoável a partir do cabeçalho ou da própria URL."""
+    if content_disposition:
+        m = re.search(r'filename\*?=(?:UTF-8\'\')?"?([^";]+)"?', content_disposition, re.IGNORECASE)
+        if m:
+            nome = os.path.basename(unquote(m.group(1).strip().strip('"')))
+            if nome:
+                return nome if nome.lower().endswith(".pdf") else nome + ".pdf"
+
+    nome = os.path.basename(unquote(urlparse(url).path)) or "documento"
+    return nome if nome.lower().endswith(".pdf") else nome + ".pdf"
 
 
-def gerar_resumo(texto_pdf, modo_nome="Detalhado"):
-    """Envia o texto para a API do Claude e retorna o resumo, aplicando o modo selecionado."""
-    instrucao_modo = _instrucao_do_modo(modo_nome)
+def baixar_pdf(url, pasta_destino=PASTA_DOWNLOADS):
+    """Baixa um PDF de uma URL http(s), valida o conteúdo e salva localmente.
+    Levanta ValueError com uma mensagem amigável em caso de problema.
+    Retorna (caminho_local, nome_arquivo)."""
+    try:
+        resposta = requests.get(
+            url, timeout=25, stream=True,
+            headers={"User-Agent": "Mozilla/5.0 (DocMind)"}
+        )
+        resposta.raise_for_status()
+    except requests.exceptions.Timeout:
+        raise ValueError("O link demorou demais para responder (timeout).")
+    except requests.exceptions.SSLError:
+        raise ValueError("Não foi possível validar o certificado de segurança do site.")
+    except requests.exceptions.ConnectionError:
+        raise ValueError("Não foi possível conectar ao link informado.")
+    except requests.exceptions.HTTPError:
+        raise ValueError(f"O link respondeu com erro {resposta.status_code}.")
 
-    prompt = ChatPromptTemplate.from_template(
-        "{instrucao_modo}\n\n"
-        "Você é o DocMind, assistente especializado em documentos PDF.\n"
-        "Responda sempre em português.\n\n"
-        "Resuma o documento abaixo seguindo o estilo definido acima. "
-        "Use tópicos claros quando fizer sentido para o modo escolhido.\n\n"
-        "Documento:\n{texto}"
-    )
-    chain = prompt | claude
-    resposta = chain.invoke({"instrucao_modo": instrucao_modo, "texto": texto_pdf[:12000]})
-    return resposta.content
+    tamanho_previsto = int(resposta.headers.get("Content-Length") or 0)
+    if tamanho_previsto > TAMANHO_MAX_PDF:
+        raise ValueError(
+            f"O arquivo tem {tamanho_previsto / 1_000_000:.1f} MB; "
+            f"o limite é {TAMANHO_MAX_PDF // 1_000_000} MB."
+        )
 
+    nome_arquivo = _nome_arquivo_da_url(url, resposta.headers.get("Content-Disposition"))
+    destino = os.path.join(pasta_destino, f"{uuid.uuid4().hex[:8]}_{nome_arquivo}")
 
-def responder_pergunta(texto_pdf, pergunta, modo_nome="Detalhado"):
-    """Responde uma pergunta com base no conteúdo do PDF, aplicando modo,
-    verificação de segurança e roteamento entre Claude/Gemini."""
-    bloqueado, _ = verificar_seguranca(pergunta)
-    if bloqueado:
-        return "Sua pergunta contém conteúdo não permitido. Reformule, por favor.", None
+    escrito = 0
+    try:
+        with open(destino, "wb") as f:
+            for pedaco in resposta.iter_content(chunk_size=65536):
+                escrito += len(pedaco)
+                if escrito > TAMANHO_MAX_PDF:
+                    raise ValueError(f"O arquivo excede o limite de {TAMANHO_MAX_PDF // 1_000_000} MB.")
+                f.write(pedaco)
 
-    instrucao_modo = _instrucao_do_modo(modo_nome)
-    modelo, nome_api = escolher_api(pergunta)
+        with open(destino, "rb") as f:
+            if f.read(5) != b"%PDF-":
+                raise ValueError("O link não aponta para um arquivo PDF válido.")
+    except Exception:
+        if os.path.exists(destino):
+            os.remove(destino)
+        raise
 
-    prompt = ChatPromptTemplate.from_template(
-        "{instrucao_modo}\n\n"
-        "Você é o DocMind, assistente especializado em análise de documentos PDF.\n"
-        "Responda com base no texto abaixo. Se a informação não estiver no documento, diga claramente.\n"
-        "Responda em português de forma objetiva.\n\n"
-        "Documento:\n{texto}\n\n"
-        "Pergunta: {pergunta}"
-    )
-    chain = prompt | modelo
-    resposta = chain.invoke({
-        "instrucao_modo": instrucao_modo,
-        "texto": texto_pdf[:12000],
-        "pergunta": pergunta
-    })
-    return resposta.content, nome_api
+    return destino, nome_arquivo
 
 
 # ═══════════════════════════════════════════════════════════════
@@ -190,14 +154,17 @@ class DocMindApp:
     def __init__(self, root):
         self.root = root
         self.root.title("DocMind")
-        self.root.geometry("980x760")
-        self.root.minsize(820, 640)
+        self.root.geometry("1040x800")
+        self.root.minsize(900, 700)
         self.root.configure(bg=COR_BG)
 
-        self.paginas_pdf  = []   # lista com o texto de cada página do PDF atual
-        self.texto_pdf    = ""   # texto completo (todas as páginas), usado nas Perguntas
+        self.texto_pdf    = ""
         self.nome_arquivo = ""
         self.documento_id = None
+        self.conversa_id  = None     # conversa atual na aba Perguntas
+        self.mensagens    = []       # [(papel, conteudo)] da conversa atual
+        self._lock_db     = threading.Lock()
+        self._ids_historico = []     # ids das linhas exibidas na aba Histórico
 
         self._construir_interface()
 
@@ -241,7 +208,6 @@ class DocMindApp:
             font=FONTE_PEQUENA, fg=COR_ERRO, bg=COR_PAINEL
         )
         self.lbl_api.pack(side="right", padx=20)
-        Tooltip(self.lbl_api, "Mostra se a chave da API do Claude foi encontrada no .env. Sem isso, a geração de resumo não funciona.")
         self._verificar_api()
 
     def _sidebar(self, pai):
@@ -260,53 +226,38 @@ class DocMindApp:
         )
         self.lbl_arquivo.pack(anchor="w", padx=16, pady=(0, 10))
 
-        btn_importar = self._botao(
+        self._botao(
             self.sidebar, "Importar PDF",
             self._importar_pdf, icone="📂"
-        )
-        btn_importar.pack(fill="x", padx=16, pady=(0, 6))
-        Tooltip(btn_importar, "Selecione um arquivo .pdf do seu computador para começar a análise.")
-
-        # Intervalo de páginas (campo com máscara numérica, uso real no resumo)
-        tk.Label(
-            self.sidebar, text="Resumir páginas (opcional)",
-            font=FONTE_PEQUENA, fg=COR_TEXTO2, bg=COR_PAINEL
-        ).pack(anchor="w", padx=16, pady=(2, 2))
-
-        frame_intervalo = tk.Frame(self.sidebar, bg=COR_PAINEL)
-        frame_intervalo.pack(fill="x", padx=16, pady=(0, 6))
-
-        self.campo_pag_inicio = CampoNumerico(
-            frame_intervalo, width=5, justify="center",
-            font=FONTE_TEXTO, fg=COR_TEXTO, bg=COR_ENTRADA,
-            relief="flat", bd=0, insertbackground=COR_ACENTO
-        )
-        self.campo_pag_inicio.pack(side="left", ipady=6)
+        ).pack(fill="x", padx=16, pady=(0, 6))
 
         tk.Label(
-            frame_intervalo, text="até",
+            self.sidebar, text="ou cole o link de um PDF",
             font=FONTE_PEQUENA, fg=COR_TEXTO2, bg=COR_PAINEL
-        ).pack(side="left", padx=6)
+        ).pack(anchor="w", padx=16, pady=(2, 4))
 
-        self.campo_pag_fim = CampoNumerico(
-            frame_intervalo, width=5, justify="center",
-            font=FONTE_TEXTO, fg=COR_TEXTO, bg=COR_ENTRADA,
+        frame_url = tk.Frame(self.sidebar, bg=COR_PAINEL)
+        frame_url.pack(fill="x", padx=16, pady=(0, 6))
+
+        self.entrada_url = tk.Entry(
+            frame_url, width=1,  # largura mínima: o fill="x" + expand quem define o tamanho real
+            font=FONTE_PEQUENA, fg=COR_TEXTO, bg=COR_ENTRADA,
             relief="flat", bd=0, insertbackground=COR_ACENTO
         )
-        self.campo_pag_fim.pack(side="left", ipady=6)
+        self.entrada_url.pack(side="left", fill="x", expand=True, ipady=6, padx=(0, 6))
+        self.entrada_url.bind("<Return>", lambda e: self._importar_pdf_por_link())
 
-        Tooltip(
-            frame_intervalo,
-            "Restringe o resumo a um intervalo de páginas do PDF (ex: 5 até 20), "
-            "útil em documentos longos. Deixe os dois em branco para resumir o documento inteiro."
-        )
+        btn_baixar = self._botao(frame_url, "Baixar", self._importar_pdf_por_link)
+        # width em caracteres: garante um tamanho mínimo fixo, independente da fonte
+        # disponível no sistema (a "Inter" pode não existir no Windows e cair numa
+        # fonte substituta mais larga, que antes cortava o texto do botão).
+        btn_baixar.config(padx=10, width=7)
+        btn_baixar.pack(side="right")
 
-        btn_resumo = self._botao(
+        self._botao(
             self.sidebar, "Gerar Resumo",
             self._gerar_resumo, icone="✦", cor=COR_ACENTO2
-        )
-        btn_resumo.pack(fill="x", padx=16, pady=(4, 16))
-        Tooltip(btn_resumo, "Envia o texto extraído do PDF (ou só o intervalo de páginas informado) para a IA, no modo selecionado abaixo.")
+        ).pack(fill="x", padx=16, pady=(0, 16))
 
         # Separador
         tk.Frame(self.sidebar, bg=COR_BORDA, height=1).pack(fill="x", padx=16, pady=8)
@@ -320,11 +271,6 @@ class DocMindApp:
             self.sidebar, "Banco",
             "Conectado" if DB_DISPONIVEL else "Desconectado"
         )
-        Tooltip(
-            self.info_db[1],
-            "Indica se a conexão com o banco PostgreSQL foi estabelecida. "
-            "Se estiver desconectado, o app continua funcionando, mas o histórico não é salvo."
-        )
 
         # Separador
         tk.Frame(self.sidebar, bg=COR_BORDA, height=1).pack(fill="x", padx=16, pady=8)
@@ -332,28 +278,54 @@ class DocMindApp:
         # Seção: modo
         self._secao_label(self.sidebar, "MODO DA IA")
         self.modo_var = tk.StringVar(value="Detalhado")
-        for chave, modo in MODOS.items():
+        for modo in nomes_dos_modos():
             rb = tk.Radiobutton(
-                self.sidebar, text=modo["nome"],
-                variable=self.modo_var, value=modo["nome"],
+                self.sidebar, text=modo,
+                variable=self.modo_var, value=modo,
+                command=self._atualizar_descricao_modo,
                 font=FONTE_PEQUENA, fg=COR_TEXTO, bg=COR_PAINEL,
                 selectcolor=COR_ENTRADA, activebackground=COR_PAINEL,
                 activeforeground=COR_ACENTO, cursor="hand2"
             )
             rb.pack(anchor="w", padx=20, pady=1)
-            Tooltip(rb, modo["instrucao"])
+
+        self.lbl_modo_desc = tk.Label(
+            self.sidebar, text="", font=("Inter", 8), fg=COR_TEXTO2, bg=COR_PAINEL,
+            wraplength=220, justify="left"
+        )
+        self.lbl_modo_desc.pack(anchor="w", padx=20, pady=(6, 4))
+        self._atualizar_descricao_modo()
+
+        self.exemplo_var = tk.BooleanVar(value=True)
+        tk.Checkbutton(
+            self.sidebar, text="Exemplo prático nas respostas",
+            variable=self.exemplo_var,
+            font=FONTE_PEQUENA, fg=COR_TEXTO, bg=COR_PAINEL,
+            selectcolor=COR_ACENTO, activebackground=COR_PAINEL,
+            activeforeground=COR_ACENTO, cursor="hand2",
+            wraplength=210, justify="left", anchor="w"
+        ).pack(anchor="w", fill="x", padx=18, pady=(6, 2))
+
+        tk.Label(
+            self.sidebar,
+            text="Adiciona um caso prático ao final de cada resposta.",
+            font=("Inter", 8), fg=COR_TEXTO2, bg=COR_PAINEL,
+            wraplength=210, justify="left"
+        ).pack(anchor="w", padx=20, pady=(0, 8))
 
     def _area_principal(self, pai):
         area = tk.Frame(pai, bg=COR_BG)
         area.pack(side="left", fill="both", expand=True, pady=12)
 
-        # Abas: Resumo | Perguntas
+        # Abas: Resumo | Perguntas | Histórico
         self.notebook = ttk.Notebook(area)
         self._estilizar_notebook()
         self.notebook.pack(fill="both", expand=True)
 
         self._aba_resumo()
         self._aba_perguntas()
+        self._aba_historico()
+        self.notebook.bind("<<NotebookTabChanged>>", self._ao_trocar_aba)
 
     def _aba_resumo(self):
         aba = tk.Frame(self.notebook, bg=COR_PAINEL)
@@ -389,11 +361,16 @@ class DocMindApp:
         aba = tk.Frame(self.notebook, bg=COR_PAINEL)
         self.notebook.add(aba, text="  Perguntas  ")
 
-        # Histórico de Q&A
+        # Conversa atual
+        topo = tk.Frame(aba, bg=COR_PAINEL)
+        topo.pack(fill="x", padx=16, pady=(14, 6))
         tk.Label(
-            aba, text="Histórico de perguntas",
+            topo, text="Conversa",
             font=FONTE_LABEL, fg=COR_ACENTO, bg=COR_PAINEL
-        ).pack(anchor="w", padx=16, pady=(14, 6))
+        ).pack(side="left")
+        self._botao(
+            topo, "Nova conversa", self._nova_conversa, icone="+", cor=COR_ACENTO2
+        ).pack(side="right")
 
         frame_hist = tk.Frame(aba, bg=COR_BORDA, bd=1)
         frame_hist.pack(fill="both", expand=True, padx=16, pady=(0, 10))
@@ -432,16 +409,17 @@ class DocMindApp:
         )
         self.entrada_pergunta.pack(side="left", fill="x", expand=True, ipady=8, padx=(0, 8))
         self.entrada_pergunta.bind("<Return>", lambda e: self._fazer_pergunta())
-        Tooltip(self.entrada_pergunta, "Digite uma pergunta sobre o conteúdo do PDF importado e pressione Enter ou clique em Perguntar.")
 
-        btn_perguntar = self._botao(
+        self._botao(
             frame_entrada, "Perguntar",
             self._fazer_pergunta, icone="→"
-        )
-        btn_perguntar.pack(side="right")
-        Tooltip(btn_perguntar, "Envia a pergunta para a IA, usando o modo selecionado na barra lateral. Considera o documento inteiro, não o intervalo de páginas.")
+        ).pack(side="right")
 
     # ── Ações ────────────────────────────────────────────────
+    def _atualizar_descricao_modo(self):
+        modo = next((m for m in MODOS.values() if m["nome"] == self.modo_var.get()), None)
+        self.lbl_modo_desc.config(text=modo["descricao"] if modo else "")
+
     def _importar_pdf(self):
         caminho = filedialog.askopenfilename(
             title="Selecione um PDF",
@@ -450,139 +428,116 @@ class DocMindApp:
         if not caminho:
             return
 
-        # Validação de dados inválidos: garante que o arquivo é realmente um PDF
-        if not caminho.lower().endswith(".pdf"):
-            messagebox.showerror("Arquivo inválido", "Selecione um arquivo com extensão .pdf.")
-            return
-
         self._status("Lendo PDF...", COR_ACENTO2)
         try:
-            self.paginas_pdf   = extrair_paginas_pdf(caminho)
-            self.texto_pdf     = "\n".join(self.paginas_pdf).strip()
-            self.nome_arquivo  = os.path.basename(caminho)
-            num_paginas        = len(self.paginas_pdf)
-
-            # Validação de dados inválidos: PDF sem texto extraível (ex: escaneado sem OCR)
-            if not self.texto_pdf:
-                messagebox.showwarning(
-                    "Aviso",
-                    "Não foi possível extrair texto deste PDF.\n"
-                    "Ele pode ser uma imagem escaneada sem OCR — o resumo pode não funcionar corretamente."
-                )
-
-            # Limpa o intervalo de páginas do documento anterior
-            self.campo_pag_inicio.delete(0, "end")
-            self.campo_pag_fim.delete(0, "end")
-
-            # Atualiza sidebar
-            self.lbl_arquivo.config(text=self.nome_arquivo, fg=COR_TEXTO)
-            self.info_paginas[1].config(text=str(num_paginas))
-            self.info_chars[1].config(text=f"{len(self.texto_pdf):,}")
-
-            # Salva no banco — tratamento de erro de conexão/acesso ao banco
-            self.documento_id = None
-            if DB_DISPONIVEL:
-                try:
-                    self.documento_id = inserir_documento(
-                        self.nome_arquivo, caminho, self.texto_pdf, num_paginas
-                    )
-                except Exception as e:
-                    self._status(f"PDF carregado, mas falha ao salvar no banco: {e}", COR_ERRO)
-
-            self._placeholder_texto(
-                self.txt_resumo,
-                f"PDF '{self.nome_arquivo}' carregado com sucesso.\nClique em 'Gerar Resumo' para continuar."
-            )
-            self._limpar_historico()
-            if self.documento_id is not None or not DB_DISPONIVEL:
-                self._status(f"PDF carregado: {self.nome_arquivo}", COR_SUCESSO)
-
+            self._finalizar_importacao(caminho, os.path.basename(caminho))
         except Exception as e:
             messagebox.showerror("Erro", f"Não foi possível ler o PDF:\n{e}")
             self._status("Erro ao ler PDF", COR_ERRO)
 
-    def _validar_intervalo_paginas(self):
-        """Valida o intervalo de páginas informado.
-        Retorna (ok, inicio_ou_None, fim_ou_None, mensagem_erro_ou_None)."""
-        ini_txt = self.campo_pag_inicio.get().strip()
-        fim_txt = self.campo_pag_fim.get().strip()
+    def _importar_pdf_por_link(self):
+        url = self.entrada_url.get().strip()
+        if not url:
+            return
+        if not re.match(r"^https?://", url, re.IGNORECASE):
+            messagebox.showwarning("Atenção", "Cole um link http:// ou https:// válido.")
+            self.entrada_url.delete(0, "end")
+            return
 
-        if not ini_txt and not fim_txt:
-            return True, None, None, None  # nenhum intervalo informado = documento inteiro
+        self.entrada_url.delete(0, "end")
+        self._status("Baixando PDF do link...", COR_ACENTO2)
 
-        if not ini_txt or not fim_txt:
-            return False, None, None, "Preencha as duas páginas do intervalo (início e fim), ou deixe ambas em branco."
+        def tarefa():
+            try:
+                caminho, nome_arquivo = baixar_pdf(url)
+            except Exception as e:
+                self.root.after(0, lambda: messagebox.showerror(
+                    "Erro", f"Não foi possível baixar o PDF:\n{e}"
+                ))
+                self.root.after(0, lambda: self._status("Erro ao baixar PDF", COR_ERRO))
+                return
 
-        inicio, fim = int(ini_txt), int(fim_txt)
-        total_paginas = len(self.paginas_pdf)
+            def concluir():
+                try:
+                    self._finalizar_importacao(caminho, nome_arquivo)
+                except Exception as e:
+                    messagebox.showerror("Erro", f"Não foi possível ler o PDF baixado:\n{e}")
+                    self._status("Erro ao ler PDF", COR_ERRO)
 
-        if inicio < 1 or fim < 1:
-            return False, None, None, "As páginas devem ser maiores que 0."
-        if inicio > fim:
-            return False, None, None, "A página inicial não pode ser maior que a final."
-        if total_paginas and fim > total_paginas:
-            return False, None, None, f"O documento tem {total_paginas} página(s) — o intervalo não pode ultrapassar isso."
+            self.root.after(0, concluir)
 
-        return True, inicio, fim, None
+        threading.Thread(target=tarefa, daemon=True).start()
+
+    def _finalizar_importacao(self, caminho, nome_arquivo):
+        """Passo comum entre importar do disco e baixar por link:
+        extrai o texto, atualiza a sidebar e salva o documento no banco."""
+        self.texto_pdf    = extrair_texto_pdf(caminho)
+        self.nome_arquivo = nome_arquivo
+
+        with open(caminho, "rb") as f:
+            leitor = PyPDF2.PdfReader(f)
+            num_paginas = len(leitor.pages)
+
+        self.lbl_arquivo.config(text=self.nome_arquivo, fg=COR_TEXTO)
+        self.info_paginas[1].config(text=str(num_paginas))
+        self.info_chars[1].config(text=f"{len(self.texto_pdf):,}")
+
+        self.documento_id = None
+        if DB_DISPONIVEL:
+            self.documento_id = db.inserir_documento(
+                self.nome_arquivo, caminho, self.texto_pdf, num_paginas
+            )
+
+        self._placeholder_texto(
+            self.txt_resumo,
+            f"PDF '{self.nome_arquivo}' carregado com sucesso.\nClique em 'Gerar Resumo' para continuar."
+        )
+        self._nova_conversa()
+        self._status(f"PDF carregado: {self.nome_arquivo}", COR_SUCESSO)
 
     def _gerar_resumo(self):
         if not self.texto_pdf:
             messagebox.showwarning("Atenção", "Importe um PDF primeiro.")
             return
 
-        # Validação de dados inválidos: intervalo de páginas precisa ser coerente
-        ok, pag_inicio, pag_fim, erro_msg = self._validar_intervalo_paginas()
-        if not ok:
-            messagebox.showerror("Intervalo inválido", erro_msg)
-            return
-
-        if pag_inicio and pag_fim:
-            texto_para_resumo = "\n".join(self.paginas_pdf[pag_inicio - 1:pag_fim]).strip()
-            if not texto_para_resumo:
-                messagebox.showwarning("Aviso", "Não há texto extraível nas páginas selecionadas.")
-                return
-            descricao_intervalo = f" (páginas {pag_inicio}–{pag_fim})"
-        else:
-            texto_para_resumo = self.texto_pdf
-            descricao_intervalo = ""
-
         modo_nome = self.modo_var.get()
-        self._status(f"Gerando resumo{descricao_intervalo} — modo {modo_nome}...", COR_ACENTO)
+        documento_id = self.documento_id
+        self._status(f"Gerando resumo (modo {modo_nome})...", COR_ACENTO)
         self._placeholder_texto(self.txt_resumo, "Consultando a IA, aguarde...")
+
+        def progresso(i, total):
+            self.root.after(0, lambda: self._status(
+                f"Resumindo parte {i} de {total} (modo {modo_nome})...", COR_ACENTO
+            ))
 
         def tarefa():
             try:
-                resumo = gerar_resumo(texto_para_resumo, modo_nome)
-                self.root.after(0, lambda: self._escrever_texto(self.txt_resumo, resumo))
-                self.root.after(0, lambda: self._status("Resumo gerado!", COR_SUCESSO))
-
-                if DB_DISPONIVEL and self.documento_id:
-                    try:
-                        inserir_resumo(self.documento_id, resumo, 0, 0)
-                    except Exception as e:
-                        self.root.after(0, lambda: self._status(f"Resumo gerado, mas falha ao salvar no banco: {e}", COR_ERRO))
-
+                res = gerar_resumo(self.texto_pdf, modo_nome, progresso=progresso)
             except Exception as e:
-                # Tratamento de erro de conexão/acesso à API de IA
                 self.root.after(0, lambda: self._escrever_texto(
-                    self.txt_resumo, f"Erro ao consultar a IA:\n{e}", erro=True
+                    self.txt_resumo, f"Erro ao gerar resumo:\n{e}", erro=True
                 ))
                 self.root.after(0, lambda: self._status("Erro na API", COR_ERRO))
+                return
+
+            self.root.after(0, lambda: self._escrever_texto(self.txt_resumo, res.texto))
+            self.root.after(0, lambda: self._status("Resumo gerado!", COR_SUCESSO))
+            self._salvar_resumo(documento_id, res, modo_nome)
 
         threading.Thread(target=tarefa, daemon=True).start()
 
     def _fazer_pergunta(self):
         pergunta = self.entrada_pergunta.get().strip()
-
-        # Validação de dados inválidos: pergunta vazia
         if not pergunta:
-            messagebox.showwarning("Atenção", "Digite uma pergunta antes de enviar.")
             return
         if not self.texto_pdf:
             messagebox.showwarning("Atenção", "Importe um PDF antes de fazer perguntas.")
             return
 
-        modo_nome = self.modo_var.get()
+        modo_nome       = self.modo_var.get()
+        incluir_exemplo = self.exemplo_var.get()
+        documento_id    = self.documento_id
+        historico       = list(self.mensagens)   # contexto: mensagens anteriores da conversa
         self.entrada_pergunta.delete(0, "end")
         self._status("Consultando a IA...", COR_ACENTO)
         self._iniciar_pergunta_no_historico(pergunta)
@@ -590,22 +545,310 @@ class DocMindApp:
 
         def tarefa():
             try:
-                resposta, nome_api = responder_pergunta(self.texto_pdf, pergunta, modo_nome)
-                self.root.after(0, lambda: self._concluir_resposta_no_historico(resposta, nome_api))
-                self.root.after(0, lambda: self._status("Resposta recebida!", COR_SUCESSO))
-
-                if DB_DISPONIVEL and self.documento_id:
-                    try:
-                        inserir_pergunta(self.documento_id, pergunta, resposta, 0, 0)
-                    except Exception as e:
-                        self.root.after(0, lambda: self._status(f"Resposta recebida, mas falha ao salvar no banco: {e}", COR_ERRO))
-
+                res = responder_pergunta(
+                    self.texto_pdf, pergunta, modo_nome,
+                    historico=historico, incluir_exemplo=incluir_exemplo
+                )
             except Exception as e:
-                # Tratamento de erro de conexão/acesso à API de IA
                 self.root.after(0, lambda: self._concluir_resposta_no_historico(str(e), erro=True))
                 self.root.after(0, lambda: self._status("Erro na API", COR_ERRO))
+                return
+
+            meta = res.api if res.bloqueado else f"{res.api} • modo {modo_nome}"
+            self.root.after(0, lambda: self._concluir_resposta_no_historico(res.texto, meta))
+            self.root.after(0, lambda: self._status("Resposta recebida!", COR_SUCESSO))
+
+            if not res.bloqueado:
+                self.mensagens += [("usuario", pergunta), ("ia", res.texto)]
+                self._salvar_pergunta(documento_id, pergunta, res, modo_nome)
 
         threading.Thread(target=tarefa, daemon=True).start()
+
+    # ── Persistência (o app continua funcionando se o banco cair) ──
+    def _aviso_banco(self, erro):
+        self.root.after(0, lambda: self._status(
+            f"Aviso: não foi possível salvar no histórico ({erro})", COR_ERRO
+        ))
+
+    def _salvar_resumo(self, documento_id, res, modo_nome):
+        if not (DB_DISPONIVEL and documento_id):
+            return
+        try:
+            db.inserir_resumo(documento_id, res.texto, res.tokens_entrada, res.tokens_saida)
+            conversa = db.criar_conversa(
+                documento_id, f"Resumo — {self.nome_arquivo}", "resumo", modo_nome
+            )
+            db.inserir_mensagem(conversa, "ia", res.texto, modo_nome, res.api)
+        except Exception as e:
+            self._aviso_banco(e)
+
+    def _salvar_pergunta(self, documento_id, pergunta, res, modo_nome):
+        if not (DB_DISPONIVEL and documento_id):
+            return
+        try:
+            with self._lock_db:
+                if self.conversa_id is None:
+                    titulo = pergunta if len(pergunta) <= 60 else pergunta[:57] + "..."
+                    self.conversa_id = db.criar_conversa(documento_id, titulo, "perguntas", modo_nome)
+                conversa = self.conversa_id
+            db.inserir_pergunta(documento_id, pergunta, res.texto, res.tokens_entrada, res.tokens_saida)
+            db.inserir_mensagem(conversa, "usuario", pergunta, modo_nome)
+            db.inserir_mensagem(conversa, "ia", res.texto, modo_nome, res.api)
+        except Exception as e:
+            self._aviso_banco(e)
+
+    def _nova_conversa(self):
+        """Começa uma conversa nova (o documento continua carregado)."""
+        self.conversa_id = None
+        self.mensagens = []
+        self._limpar_historico()
+
+    # ── Aba Histórico ────────────────────────────────────────
+    def _aba_historico(self):
+        aba = tk.Frame(self.notebook, bg=COR_PAINEL)
+        self.notebook.add(aba, text="  Histórico  ")
+
+        # Barra de busca e filtro
+        barra = tk.Frame(aba, bg=COR_PAINEL)
+        barra.pack(fill="x", padx=16, pady=(14, 8))
+
+        self.busca_var = tk.StringVar()
+        entrada = tk.Entry(
+            barra, textvariable=self.busca_var, font=FONTE_TEXTO,
+            fg=COR_TEXTO, bg=COR_ENTRADA, relief="flat", bd=0, insertbackground=COR_ACENTO
+        )
+        entrada.pack(side="left", fill="x", expand=True, ipady=6, padx=(0, 8))
+        entrada.bind("<Return>", lambda e: self._atualizar_historico())
+        self._busca_job = None
+        self.busca_var.trace_add("write", lambda *a: self._agendar_busca())
+
+        tk.Label(
+            barra, text="Mostrar:",
+            font=FONTE_PEQUENA, fg=COR_TEXTO2, bg=COR_PAINEL
+        ).pack(side="left", padx=(0, 6))
+
+        self.filtro_var = tk.StringVar(value="Todos")
+        filtro = ttk.Combobox(
+            barra, textvariable=self.filtro_var, state="readonly", width=13,
+            values=["Todos", "Conversas", "Resumos"]
+        )
+        filtro.pack(side="left", padx=(0, 8))
+        filtro.bind("<<ComboboxSelected>>", lambda e: self._atualizar_historico())
+
+        self._botao(barra, "Atualizar", self._atualizar_historico, icone="↻").pack(side="left")
+
+        # Lista + visualização
+        corpo = tk.Frame(aba, bg=COR_PAINEL)
+        corpo.pack(fill="both", expand=True, padx=16, pady=(0, 8))
+
+        esq = tk.Frame(corpo, bg=COR_BORDA, bd=1, width=360)
+        esq.pack(side="left", fill="y", padx=(0, 10))
+        esq.pack_propagate(False)
+
+        estilo = ttk.Style()
+        estilo.configure(
+            "Historico.Treeview", background=COR_ENTRADA, foreground=COR_TEXTO,
+            fieldbackground=COR_ENTRADA, borderwidth=0, rowheight=44, font=FONTE_PEQUENA
+        )
+        estilo.map("Historico.Treeview", background=[("selected", COR_ACENTO)])
+
+        self.lista_hist = ttk.Treeview(
+            esq, style="Historico.Treeview", show="tree", selectmode="browse"
+        )
+        scroll_l = tk.Scrollbar(esq, command=self.lista_hist.yview, bg=COR_PAINEL)
+        self.lista_hist.configure(yscrollcommand=scroll_l.set)
+        scroll_l.pack(side="right", fill="y")
+        self.lista_hist.pack(fill="both", expand=True)
+        self.lista_hist.bind("<<TreeviewSelect>>", lambda e: self._mostrar_conversa_selecionada())
+        self.lista_hist.bind("<Double-1>", lambda e: self._abrir_conversa_selecionada())
+
+        dir_ = tk.Frame(corpo, bg=COR_BORDA, bd=1)
+        dir_.pack(side="left", fill="both", expand=True)
+        self.txt_visualizacao = tk.Text(
+            dir_, font=FONTE_TEXTO, fg=COR_TEXTO, bg=COR_ENTRADA,
+            relief="flat", bd=0, padx=14, pady=14, wrap="word",
+            cursor="arrow", state="disabled"
+        )
+        scroll_v = tk.Scrollbar(dir_, command=self.txt_visualizacao.yview, bg=COR_PAINEL)
+        self.txt_visualizacao.configure(yscrollcommand=scroll_v.set)
+        scroll_v.pack(side="right", fill="y")
+        self.txt_visualizacao.pack(fill="both", expand=True)
+        self._configurar_tags_chat(self.txt_visualizacao)
+
+        # Ações (desabilitadas até o usuário selecionar algo na lista)
+        acoes = tk.Frame(aba, bg=COR_PAINEL)
+        acoes.pack(fill="x", padx=16, pady=(0, 14))
+        self.btn_abrir = self._botao(acoes, "Continuar conversa", self._abrir_conversa_selecionada, icone="→")
+        self.btn_abrir.pack(side="left")
+        self.btn_renomear = self._botao(acoes, "Renomear", self._renomear_conversa_selecionada, cor=COR_ACENTO2)
+        self.btn_renomear.pack(side="left", padx=8)
+        self.btn_excluir = self._botao(acoes, "Excluir", self._excluir_conversa_selecionada, cor=COR_ERRO)
+        self.btn_excluir.pack(side="left")
+        self._estado_botoes_historico(selecionado=False)
+
+        self._mensagem_visualizacao(
+            "Selecione uma conversa ou resumo na lista para visualizar." if DB_DISPONIVEL
+            else "Banco de dados indisponível: o histórico não pode ser carregado."
+        )
+
+    def _ao_trocar_aba(self, _evento=None):
+        if self.notebook.index(self.notebook.select()) == 2:
+            self._atualizar_historico()
+
+    def _agendar_busca(self):
+        """Espera o usuário parar de digitar antes de consultar o banco."""
+        if self._busca_job:
+            self.root.after_cancel(self._busca_job)
+        self._busca_job = self.root.after(350, self._atualizar_historico)
+
+    def _atualizar_historico(self):
+        self.lista_hist.delete(*self.lista_hist.get_children())
+        self._ids_historico = []
+        if not DB_DISPONIVEL:
+            return
+        tipo = {"Conversas": "perguntas", "Resumos": "resumo"}.get(self.filtro_var.get())
+        self._estado_botoes_historico(selecionado=False)
+        try:
+            conversas = db.listar_conversas(self.busca_var.get(), tipo)
+        except Exception as e:
+            self._mensagem_visualizacao(f"Erro ao carregar o histórico:\n{e}")
+            return
+
+        for c in conversas:
+            icone = "✦" if c["tipo"] == "resumo" else "💬"
+            data = c["data_atualizacao"].strftime("%d/%m %H:%M")
+            arquivo = c["nome_arquivo"] if len(c["nome_arquivo"]) <= 18 else c["nome_arquivo"][:15] + "..."
+            modo = f" • {c['modo']}" if c["modo"] else ""
+            texto = f"{icone} {c['titulo']}\n     {arquivo}{modo} • {data}"
+            self.lista_hist.insert("", "end", iid=str(c["id"]), text=texto)
+            self._ids_historico.append(c["id"])
+
+        if not conversas:
+            self._mensagem_visualizacao("Nenhuma conversa encontrada.")
+
+    def _conversa_selecionada(self):
+        sel = self.lista_hist.selection()
+        return int(sel[0]) if sel else None
+
+    def _mensagem_visualizacao(self, texto):
+        self._placeholder_texto(self.txt_visualizacao, texto)
+
+    def _estado_botoes_historico(self, selecionado, tipo=None):
+        """Habilita/desabilita as ações conforme o item selecionado e troca o texto
+        do botão principal: 'Continuar conversa' para perguntas, 'Abrir resumo' para resumos."""
+        estado = "normal" if selecionado else "disabled"
+        self.btn_renomear.config(state=estado)
+        self.btn_excluir.config(state=estado)
+        if tipo == "resumo":
+            self.btn_abrir.config(text="⬆  Abrir resumo", state=estado)
+        else:
+            self.btn_abrir.config(text="→  Continuar conversa", state=estado)
+
+    def _mostrar_conversa_selecionada(self):
+        conversa_id = self._conversa_selecionada()
+        if conversa_id is None:
+            self._estado_botoes_historico(selecionado=False)
+            return
+        try:
+            conversa = db.buscar_conversa(conversa_id)
+            mensagens = db.listar_mensagens(conversa_id)
+        except Exception as e:
+            self._mensagem_visualizacao(f"Erro ao carregar a conversa:\n{e}")
+            self._estado_botoes_historico(selecionado=False)
+            return
+        self._renderizar_mensagens(self.txt_visualizacao, mensagens, conversa["tipo"])
+        self._estado_botoes_historico(selecionado=True, tipo=conversa["tipo"])
+
+    def _abrir_conversa_selecionada(self):
+        conversa_id = self._conversa_selecionada()
+        if conversa_id is None:
+            messagebox.showinfo("Histórico", "Selecione uma conversa na lista.")
+            return
+        try:
+            conversa = db.buscar_conversa(conversa_id)
+            documento = db.buscar_documento(conversa["documento_id"])
+            mensagens = db.listar_mensagens(conversa_id)
+        except Exception as e:
+            messagebox.showerror("Erro", f"Não foi possível abrir a conversa:\n{e}")
+            return
+
+        # Recarrega o documento da conversa
+        self.documento_id = documento["id"]
+        self.texto_pdf    = documento["texto_extraido"] or ""
+        self.nome_arquivo = documento["nome_arquivo"]
+        self.lbl_arquivo.config(text=self.nome_arquivo, fg=COR_TEXTO)
+        self.info_paginas[1].config(text=str(documento["paginas"] or "—"))
+        self.info_chars[1].config(text=f"{len(self.texto_pdf):,}")
+        if conversa["modo"] in nomes_dos_modos():
+            self.modo_var.set(conversa["modo"])
+            self._atualizar_descricao_modo()
+
+        if conversa["tipo"] == "resumo":
+            self._escrever_texto(self.txt_resumo, mensagens[0]["conteudo"] if mensagens else "")
+            self.notebook.select(0)
+            self._status(f"Resumo aberto: {self.nome_arquivo}", COR_SUCESSO)
+            return
+
+        # Conversa de perguntas: continua de onde parou
+        self.conversa_id = conversa_id
+        self.mensagens = [(m["papel"], m["conteudo"]) for m in mensagens]
+        self._renderizar_mensagens(self.txt_historico, mensagens, "perguntas")
+        self.notebook.select(1)
+        self._status(f"Conversa aberta: {conversa['titulo']}", COR_SUCESSO)
+
+    def _renomear_conversa_selecionada(self):
+        conversa_id = self._conversa_selecionada()
+        if conversa_id is None:
+            return
+        atual = self.lista_hist.item(str(conversa_id), "text").split("\n")[0][2:].strip()
+        novo = simpledialog.askstring("Renomear", "Novo título:", initialvalue=atual, parent=self.root)
+        if novo and novo.strip():
+            try:
+                db.renomear_conversa(conversa_id, novo)
+            except Exception as e:
+                messagebox.showerror("Erro", f"Não foi possível renomear:\n{e}")
+                return
+            self._atualizar_historico()
+            if str(conversa_id) in self.lista_hist.get_children():
+                self.lista_hist.selection_set(str(conversa_id))
+
+    def _excluir_conversa_selecionada(self):
+        conversa_id = self._conversa_selecionada()
+        if conversa_id is None:
+            return
+        if not messagebox.askyesno("Excluir", "Excluir esta conversa do histórico?\nO documento não será apagado."):
+            return
+        try:
+            db.excluir_conversa(conversa_id)
+        except Exception as e:
+            messagebox.showerror("Erro", f"Não foi possível excluir:\n{e}")
+            return
+        if conversa_id == self.conversa_id:
+            self._nova_conversa()
+        self._atualizar_historico()
+        self._mensagem_visualizacao("Conversa excluída.")
+
+    def _renderizar_mensagens(self, widget, mensagens, tipo):
+        """Mostra uma lista de mensagens do banco num widget Text já configurado."""
+        widget.config(state="normal", fg=COR_TEXTO)
+        widget.delete("1.0", "end")
+        for i, m in enumerate(mensagens):
+            if i:
+                widget.insert("end", "\n")
+            if m["papel"] == "usuario":
+                widget.insert("end", "Você\n", ("user_label",))
+                self._inserir_bloco_formatado(widget, m["conteudo"], "user_texto")
+                widget.insert("end", "\n")
+            else:
+                rotulo = "Resumo" if tipo == "resumo" else "DocMind"
+                widget.insert("end", f"{rotulo}\n", ("ia_label",))
+                self._inserir_bloco_formatado(widget, m["conteudo"], "ia_texto")
+                meta = " • ".join(x for x in (m["api"], f"modo {m['modo']}" if m["modo"] else None) if x)
+                if meta:
+                    widget.insert("end", f"\nvia {meta}", ("ia_meta",))
+                widget.insert("end", "\n")
+        widget.see("end" if widget is not self.txt_visualizacao else "1.0")
+        widget.config(state="disabled")
 
     # ── Formatação de texto rico (sem markdown cru) ───────────
     def _configurar_tags_texto(self, widget, prefixo):
@@ -771,7 +1014,7 @@ class DocMindApp:
         self.txt_historico.config(state="disabled")
 
     def _verificar_api(self):
-        if api_key and api_key != "sua-chave-aqui":
+        if ANTHROPIC_API_KEY:
             self.lbl_api.config(text="● API conectada", fg=COR_SUCESSO)
         else:
             self.lbl_api.config(text="● API desconectada", fg=COR_ERRO)

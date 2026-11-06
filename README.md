@@ -1,6 +1,24 @@
 # DocMind
 
-Assistente inteligente de documentos PDF com apoio de Inteligência Artificial.
+[![Testes](https://github.com/AlessandroLuizLima/docmind/actions/workflows/testes.yml/badge.svg)](https://github.com/AlessandroLuizLima/docmind/actions/workflows/testes.yml)
+![Python](https://img.shields.io/badge/python-3.10%2B-blue)
+![Interface](https://img.shields.io/badge/interface-Tkinter-7c6af7)
+
+**Entenda qualquer PDF em minutos.** O DocMind é um assistente desktop que lê um documento PDF e, com Inteligência Artificial, gera resumos, responde perguntas sobre o conteúdo e transforma o texto em material de estudo.
+
+![Tela de resumo do DocMind](docs/img/resumo.png)
+
+## Para que serve
+
+Ler um contrato de 40 páginas, um edital ou um artigo científico inteiro leva tempo. O DocMind faz a primeira leitura por você:
+
+| Situação | Como o DocMind ajuda |
+|---|---|
+| Vou assinar um contrato | Modo **Revisão Crítica** aponta lacunas, ambiguidades e riscos |
+| Tenho prova amanhã | Modo **Estudo** gera resumo por tópicos, flashcards e questões com gabarito |
+| Preciso dos números de um relatório | Modo **Extração de Dados** lista datas, valores, nomes e prazos |
+| Só quero saber do que se trata | Modo **Resumido** dá uma visão geral do documento inteiro |
+| Tenho uma dúvida específica | Aba **Perguntas**: converse com o documento, com contexto das mensagens anteriores |
 
 ## Integrantes do Grupo
 
@@ -9,73 +27,116 @@ Assistente inteligente de documentos PDF com apoio de Inteligência Artificial.
 - Arthur Henrique Svidzinski
 - Breno Suski
 
-## Resumo da Automação Proposta
-
-O DocMind é uma aplicação desktop (Python/Tkinter) que automatiza a análise de documentos em PDF por meio de Inteligência Artificial. O sistema permite que o usuário carregue um arquivo PDF e obtenha, de forma automática:
-
-- Resumos do conteúdo do documento;
-- Respostas a perguntas feitas sobre o conteúdo (modo Q&A);
-- Extração de pontos-chave e insights;
-- Conversão de trechos em áudio (texto-para-voz).
-
-A proposta central da automação é eliminar a leitura manual e exaustiva de documentos extensos, delegando à IA (via API da Claude e da Gemini, orquestradas com LangChain) a tarefa de interpretar o conteúdo e responder de forma contextualizada, mantendo o histórico de interações persistido em banco de dados PostgreSQL. O projeto também incorpora validações de segurança (proteção contra prompt injection e sanitização de entradas) centralizadas em um pacote compartilhado (`docmind/`), garantindo que a automação seja executada de forma confiável e segura.
-
-## Tecnologias e Ferramentas Utilizadas
-
-**Linguagem e Interface**
-- Python 3
-- Tkinter (interface gráfica desktop, modo escuro)
-
-**Inteligência Artificial**
-- API Claude (Anthropic)
-- API Gemini (Google)
-- LangChain (orquestração dos modelos de IA)
-
-**Processamento de Documentos**
-- PyPDF2 (extração de texto de PDFs)
-- gTTS (conversão de texto em áudio)
-
-**Persistência de Dados**
-- PostgreSQL
-- psycopg2
-
-**Qualidade e Segurança**
-- Pytest (suíte de testes automatizados)
-- GitHub Actions (CI/CD)
-- Módulo de validação de segurança centralizado (`docmind/`)
-
-**Controle de Versão**
-- Git / GitHub
-
 ## Funcionalidades
 
-**Modos da IA** (cada modo muda o tipo de saída, tanto no resumo quanto nas perguntas):
+**Entrada do documento**
+- Importa PDF do computador ou baixa direto de um link (até 40 MB, com validação do arquivo)
+- Avisa quando o PDF é escaneado (só imagem) e não tem texto para ler
 
-- **Extração de Dados**: lista datas, valores, nomes, prazos, definições e referências.
-- **Resumido**: respostas curtas e resumo enxuto que cobre o documento inteiro.
-- **Estudo**: explica como um professor e gera flashcards e questões de revisão com gabarito.
-- **Detalhado**: resposta e resumo aprofundados, seção por seção.
-- **Revisão Crítica**: aponta lacunas, ambiguidades, contradições e riscos.
+**Cinco modos da IA**: cada modo muda o *tipo* de saída, tanto no resumo quanto nas perguntas
 
-**Resumos completos**: documentos longos são divididos em partes, cada parte é resumida e depois os resumos são unificados.
+| Modo | Resumo | Perguntas |
+|---|---|---|
+| Extração de Dados | Pessoas, datas, valores, termos, obrigações e referências em listas | Só os dados objetivos, indicando de onde vieram |
+| Resumido | Visão geral + 6 a 10 tópicos + conclusão | Resposta em até 3 linhas |
+| Estudo | Tópicos, conceitos-chave, 5 flashcards e 3 questões com gabarito | Explica como um professor e faz uma pergunta de fixação |
+| Detalhado | Seção por seção, mantendo números e nomes | Resposta aprofundada com contexto |
+| Revisão Crítica | Pontos fortes, lacunas, contradições e riscos | Separa o que está no texto do que é inferência |
 
-**Exemplo prático**: toda resposta da aba Perguntas termina com um exemplo (pode ser desligado na barra lateral). As perguntas consideram as mensagens anteriores da conversa.
+**Resumos completos de documentos longos**: o texto é dividido em partes, cada parte é resumida e os resumos são unificados no final, para que o fim do documento não seja ignorado.
 
-**Histórico**: todas as conversas e resumos ficam salvos no PostgreSQL. Na aba Histórico é possível buscar, filtrar, abrir e continuar uma conversa, renomear e excluir.
+**Perguntas**
+- Sugestões prontas (Pontos principais, Prazos e valores, Riscos, Explique fácil): um clique envia
+- A IA considera as mensagens anteriores da conversa ("e o prazo?", "explique o item 2")
+- Toda resposta termina com um **Exemplo prático** (pode ser desligado na barra lateral)
+- Roteamento entre duas IAs: perguntas sobre o documento vão para o **Claude**; perguntas gerais vão para o **Gemini** (se a chave do Google estiver configurada)
 
-## Instruções de Instalação, Dependências e Execução
+**Exportação**: resumos e conversas podem ser copiados ou salvos em Markdown (`.md`), prontos para colar num relatório, no Notion ou no GitHub.
+
+**Histórico**: tudo fica salvo no PostgreSQL. Na aba Histórico dá para buscar (no título, no nome do arquivo e no conteúdo), filtrar, continuar uma conversa, renomear, exportar e excluir. Sem banco de dados o app funciona normalmente, só não guarda o histórico.
+
+**Segurança**: as perguntas passam por um filtro contra prompt injection, comandos maliciosos e tentativas de mudar a identidade da IA. O texto do PDF é tratado como conteúdo, nunca como instrução.
+
+<p align="center">
+  <img src="docs/img/perguntas.png" width="49%" alt="Aba de perguntas">
+  <img src="docs/img/historico.png" width="49%" alt="Aba de histórico">
+</p>
+
+### Atalhos de teclado
+
+| Atalho | Ação |
+|---|---|
+| `Ctrl+O` | Abrir PDF do computador |
+| `Ctrl+L` | Ir para o campo de link (para colar a URL de um PDF) |
+| `Ctrl+R` | Gerar resumo |
+| `Ctrl+N` | Nova conversa |
+| `Ctrl+S` | Salvar a aba atual como Markdown |
+| `Ctrl+1` / `2` / `3` | Ir para Resumo / Perguntas / Histórico |
+
+No macOS, use `Cmd` no lugar de `Ctrl`.
+
+## Tecnologias
+
+| Área | Ferramentas |
+|---|---|
+| Linguagem e interface | Python 3.10+, Tkinter (tema escuro) |
+| Inteligência Artificial | Claude (Anthropic) e Gemini (Google), orquestrados com LangChain |
+| Documentos | pypdf (extração de texto), requests (download por link) |
+| Persistência | PostgreSQL + psycopg2 |
+| Qualidade | Pytest (testes sem internet e sem chave de API), GitHub Actions |
+
+## Estrutura do projeto
+
+```
+docmind/
+├── main.py                 # ponto de entrada: python main.py
+├── app.py                  # interface gráfica (Tkinter)
+├── DocMindAPI.py           # IA: modos, prompts, resumo por partes, roteador Claude/Gemini
+├── docmind/                # lógica reutilizável, independente da interface
+│   ├── pdf.py              #   leitura de PDF e download por link
+│   ├── seguranca.py        #   filtro de prompt injection e pedidos indevidos
+│   └── exportar.py         #   exportação de resumos e conversas em Markdown
+├── database/
+│   ├── database.py         # funções de acesso ao PostgreSQL
+│   └── schema.sql          # tabelas (criadas automaticamente na 1ª execução)
+├── tests/                  # suíte Pytest
+├── docs/img/               # capturas de tela do README
+├── .env.example            # modelo das variáveis de ambiente
+└── .github/workflows/      # CI: roda os testes a cada push
+```
+
+## Como funciona
+
+```
+ PDF (arquivo ou link)
+        │
+        ▼
+ docmind/pdf.py ── extrai o texto ──► PostgreSQL (documento)
+        │
+        ├──► Resumo ── texto dividido em partes ──► Claude resume cada parte
+        │                                           └─► Claude unifica no modo escolhido
+        │
+        └──► Pergunta ── docmind/seguranca.py (filtro)
+                         └─► roteador: documento → Claude │ geral → Gemini
+                             (com os trechos mais relevantes do PDF e as últimas mensagens)
+                                        │
+                                        ▼
+                         resposta na tela + histórico no PostgreSQL + exportação .md
+```
+
+## Instalação e execução
 
 ### Pré-requisitos
 
-- Python 3.10 ou superior instalado
-- PostgreSQL instalado e em execução
-- Chaves de API válidas para Claude (Anthropic) e/ou Gemini (Google)
+- Python 3.10 ou superior
+- Uma chave da API da Anthropic (Claude): crie em [console.anthropic.com](https://console.anthropic.com)
+- Opcional: chave do Google (Gemini) e PostgreSQL para o histórico
 
 ### 1. Clonar o repositório
 
 ```bash
-git clone https://github.com/AlessandroLuizLima/DocMind.git
-cd DocMind
+git clone https://github.com/AlessandroLuizLima/docmind.git
+cd docmind
 ```
 
 ### 2. Criar e ativar um ambiente virtual
@@ -96,43 +157,54 @@ source venv/bin/activate
 pip install -r requirements.txt
 ```
 
-### 4. Configurar variáveis de ambiente
+No Linux, o Tkinter pode precisar ser instalado à parte: `sudo apt install python3-tk`.
 
-Crie um arquivo `.env` na raiz do projeto com as seguintes chaves:
+### 4. Configurar as variáveis de ambiente
 
+Copie o modelo e preencha com as suas chaves:
+
+```bash
+# Windows
+copy .env.example .env
+
+# Linux/Mac
+cp .env.example .env
 ```
-ANTHROPIC_API_KEY=sua_chave_aqui
-GOOGLE_API_KEY=sua_chave_aqui
-DB_HOST=localhost
-DB_PORT=5432
-DB_NAME=docmind
-DB_USER=seu_usuario
-DB_PASSWORD=sua_senha
-```
 
-Os nomes `CLAUDE_API_KEY` e `GEMINI_API_KEY` também são aceitos. Se a chave do Google não for informada, todas as perguntas são respondidas pelo Claude.
+| Variável | Obrigatória | Para quê |
+|---|---|---|
+| `ANTHROPIC_API_KEY` | Sim | Resumos e perguntas (Claude). Também aceita `CLAUDE_API_KEY` |
+| `GOOGLE_API_KEY` | Não | Perguntas gerais (Gemini). Também aceita `GEMINI_API_KEY`. Sem ela, tudo usa o Claude |
+| `DB_HOST`, `DB_PORT`, `DB_NAME`, `DB_USER`, `DB_PASSWORD` | Não | Histórico no PostgreSQL |
 
-### 5. Configurar o banco de dados
+### 5. Banco de dados (opcional)
 
-Crie o banco de dados PostgreSQL indicado no `.env`. As tabelas necessárias são criadas automaticamente na primeira execução da aplicação.
+Crie o banco indicado em `DB_NAME` (por exemplo, `createdb docmind`). As tabelas são criadas automaticamente na primeira execução. Sem PostgreSQL, a barra lateral mostra "Banco: Desconectado" e o resto funciona normalmente.
 
-### 6. Executar a aplicação
+### 6. Executar
 
 ```bash
 python main.py
 ```
 
-### 7. Executar os testes (opcional)
+### 7. Rodar os testes
 
 ```bash
 pytest
 ```
 
-## Status Atual do Projeto
+Os testes de IA usam um modelo falso, então não gastam créditos nem precisam de internet. Os testes de banco rodam quando há um PostgreSQL configurado no `.env` e são pulados caso contrário.
 
-- [x] Interface gráfica funcional (Tkinter, modo escuro)
-- [x] Integração com APIs de IA (Claude e Gemini via LangChain)
-- [x] Persistência em PostgreSQL
-- [x] Módulo de segurança centralizado com validação de entradas
-- [x] Suíte de testes automatizados (Pytest) e pipeline de CI/CD (GitHub Actions)
-- [ ] Deploy/distribuição final
+## Status do projeto
+
+- [x] Interface gráfica com tema escuro, tela de boas-vindas, sugestões e atalhos
+- [x] Cinco modos de IA, com resumo por partes para documentos longos
+- [x] Integração com Claude e Gemini via LangChain, com roteamento automático
+- [x] Importação por arquivo ou link, com aviso para PDFs escaneados
+- [x] Histórico em PostgreSQL com busca, filtros e continuação de conversas
+- [x] Exportação de resumos e conversas em Markdown
+- [x] Filtro de segurança centralizado no pacote `docmind/`, com testes
+- [x] Testes automatizados (Pytest) e CI no GitHub Actions
+- [ ] OCR para PDFs escaneados
+- [ ] Ouvir o resumo em áudio (texto-para-voz)
+- [ ] Executável para distribuição (PyInstaller)

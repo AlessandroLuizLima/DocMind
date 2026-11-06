@@ -266,46 +266,9 @@ def prompt_especializado(instrucao_modo):
 # 4. PROTEÇÕES CONTRA USO INDEVIDO
 # ═══════════════════════════════════════════════════════════════
 
-# Padrões que indicam tentativas maliciosas
-PADROES_BLOQUEADOS = [
-    # Prompt Injection — tentativas de sobrescrever o sistema
-    r"ignore (todas as|as|suas) (instru[çc][oõ]es|regras)",
-    r"esquece?[- ]?tudo",
-    r"novo (prompt|sistema|papel|role|contexto)",
-    r"system\s*prompt",
-    r"act as",
-    r"ignore previous",
-    r"jailbreak",
-    r"dan mode",
-    r"pretend (you are|to be)",
-
-    # Comandos maliciosos
-    r"\bexec\b|\beval\b|\bos\.|\bsubprocess\b",
-    r"(delete|drop|truncate)\s+(table|database|all)",
-    r"rm\s+-rf",
-    r"format\s+c:",
-
-    # Pedidos inadequados
-    r"(como|how to).{0,30}(hackear|invadir|roubar|matar|bomb)",
-    r"(droga|tráfico|arma\s+ilegal)",
-
-    # Quebra de regras / redefinição de identidade
-    r"voc[eê]\s+(não\s+é|agora\s+é|passa\s+a\s+ser)",
-    r"(mude|altere|troque)\s+(seu|sua)\s+(papel|identidade|personalidade)",
-    r"finja\s+que",
-]
-
-
-def verificar_seguranca(texto):
-    """
-    Verifica se a entrada contém padrões bloqueados.
-    Retorna (True, motivo) se bloqueado, (False, None) se seguro.
-    """
-    texto_lower = texto.lower()
-    for padrao in PADROES_BLOQUEADOS:
-        if re.search(padrao, texto_lower):
-            return True, padrao
-    return False, None
+# A lista de padrões e a verificação ficam no pacote compartilhado docmind/,
+# para serem reaproveitadas e testadas de forma isolada.
+from docmind.seguranca import PADROES_BLOQUEADOS, verificar_seguranca  # noqa: E402,F401
 
 
 # ═══════════════════════════════════════════════════════════════

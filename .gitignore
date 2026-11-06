@@ -15,3 +15,13 @@ venv/
 .idea/
 # PDFs baixados por link
 pdfs_baixados/
+
+# Testes e builds
+.pytest_cache/
+.coverage
+htmlcov/
+dist/
+build/
+
+# Exportações geradas pelo app
+exportacoes/

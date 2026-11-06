@@ -11,6 +11,9 @@ DB_CONFIG = {
     "dbname":   os.getenv("DB_NAME", "docmind"),
     "user":     os.getenv("DB_USER", "postgres"),
     "password": os.getenv("DB_PASSWORD", "postgres"),
+    # Sem isso, um DB_HOST inacessível deixava o app "congelado" ao abrir,
+    # esperando a conexão por vários minutos antes de seguir sem o banco.
+    "connect_timeout": int(os.getenv("DB_CONNECT_TIMEOUT", "3")),
 }
 
 SCHEMA_PATH = os.path.join(os.path.dirname(os.path.abspath(__file__)), "schema.sql")

@@ -6,7 +6,7 @@ import time
 
 import pytest
 
-import app as A
+import docmind.pdf as A
 
 CONTEUDO_PDF = (
     b"%PDF-1.4\n1 0 obj<</Type/Catalog>>endobj\n"

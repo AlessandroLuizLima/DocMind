@@ -1,11 +1,13 @@
-anthropic
-langchain-core
-langchain-anthropic
-langchain-google-genai
-python-dotenv
-psycopg2-binary
-PyPDF2
-requests
-Pillow
-win11toast
-pytest
+# ── IA ──────────────────────────────────────
+langchain-core>=0.3
+langchain-anthropic>=0.3
+langchain-google-genai>=2.0
+
+# ── Documentos, rede e banco ────────────────
+pypdf>=4.0
+requests>=2.31
+psycopg2-binary>=2.9
+python-dotenv>=1.0
+
+# ── Testes ──────────────────────────────────
+pytest>=8.0
